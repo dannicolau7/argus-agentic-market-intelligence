@@ -54,6 +54,37 @@ def get_current_price(ticker: str) -> float:
     return price
 
 
+def get_intraday_bars(ticker: str, interval: str = "5m", period: str = "1d") -> list:
+    """
+    Returns intraday OHLCV bars via yfinance.
+    Each bar is a dict with keys: t (ms timestamp), o, h, l, c, v
+    Compatible with the same format used by get_daily_bars().
+
+    interval: '1m' '2m' '5m' '15m' '30m' '60m' '90m'
+    period:   '1d' '5d' '1mo'
+    """
+    try:
+        df = yf.Ticker(ticker).history(interval=interval, period=period)
+        if df.empty:
+            print(f"⚠️  [yfinance] No intraday data returned for {ticker}")
+            return []
+        bars = []
+        for ts, row in df.iterrows():
+            bars.append({
+                "t": int(ts.timestamp() * 1000),
+                "o": round(float(row["Open"]),   6),
+                "h": round(float(row["High"]),   6),
+                "l": round(float(row["Low"]),    6),
+                "c": round(float(row["Close"]),  6),
+                "v": round(float(row["Volume"]), 2),
+            })
+        print(f"📊 [yfinance] {len(bars)} intraday bars ({interval}, {period}) for {ticker}")
+        return bars
+    except Exception as e:
+        print(f"❌ [yfinance] get_intraday_bars failed: {e}")
+        return []
+
+
 def get_news(ticker: str, limit: int = 10) -> list:
     """Get news articles — free tier"""
     data = _get("/v2/reference/news", {
@@ -95,5 +126,14 @@ if __name__ == "__main__":
     details = get_ticker_details(ticker)
     print(f"   Company: {details.get('name')}")
     print(f"   Market cap: {details.get('market_cap')}")
+
+    print(f"\n⏱️  Testing intraday bars (5min, today)...")
+    intraday = get_intraday_bars(ticker, interval="5m", period="1d")
+    print(f"   Got {len(intraday)} 5-min bars")
+    if intraday:
+        first = intraday[0]
+        last  = intraday[-1]
+        print(f"   First → {datetime.fromtimestamp(first['t']/1000).strftime('%H:%M')}  C:{first['c']}")
+        print(f"   Last  → {datetime.fromtimestamp(last['t']/1000).strftime('%H:%M')}  C:{last['c']}")
 
     print(f"\n✅ Polygon feed working!")
