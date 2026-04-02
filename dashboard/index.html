@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Stock AI Agent</title>
+  <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #0d1117;
+      --surface: #161b22;
+      --border:  #30363d;
+      --muted:   #8b949e;
+      --text:    #e6edf3;
+      --green:   #3fb950;
+      --red:     #f85149;
+      --gold:    #d29922;
+      --purple:  #a371f7;
+      --blue:    #58a6ff;
+    }
+
+    body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 13px; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
+
+    /* ── Header ── */
+    header { display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; height: 44px; }
+    header h1 { font-size: 14px; font-weight: 700; color: var(--text); }
+    .pill { padding: 3px 10px; border-radius: 20px; font-weight: 700; font-size: 11px; letter-spacing: 0.5px; }
+    #ticker-pill { background: #21262d; border: 1px solid var(--border); color: var(--blue); font-size: 13px; }
+    .sig-buy  { background: #1a4731; color: var(--green); border: 1px solid var(--green); }
+    .sig-sell { background: #4d1a1a; color: var(--red);   border: 1px solid var(--red); }
+    .sig-hold { background: #2d2a1a; color: var(--gold);  border: 1px solid var(--gold); }
+    #market-pill { font-size: 11px; }
+    .market-open   { background: #1a4731; color: var(--green); border: 1px solid var(--green); }
+    .market-closed { background: #21262d; color: var(--muted); border: 1px solid var(--border); }
+    .paper-pill { background: #1a1a4d; color: #8888ff; border: 1px solid #4444aa; }
+    #price-display { font-size: 16px; font-weight: 700; margin-left: 4px; }
+    #conf-header { font-size: 11px; color: var(--muted); margin-left: auto; }
+    #last-update { font-size: 11px; color: var(--muted); }
+    #run-btn { background: #21262d; border: 1px solid var(--border); color: var(--text); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 11px; }
+    #run-btn:hover { background: var(--border); }
+
+    /* ── Main layout ── */
+    .layout { display: grid; grid-template-columns: 1fr 300px; flex: 1; min-height: 0; }
+
+    /* ── Chart column ── */
+    .chart-col { display: flex; flex-direction: column; border-right: 1px solid var(--border); min-height: 0; }
+    #main-chart { flex: 3; min-height: 0; }
+    #rsi-chart  { flex: 1; min-height: 0; border-top: 1px solid var(--border); }
+
+    /* ── Right column ── */
+    .right-col { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+
+    /* ── Tabs ── */
+    .tab-bar { display: flex; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+    .tab { padding: 8px 14px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; }
+    .tab.active { color: var(--blue); border-bottom-color: var(--blue); }
+    .tab:hover:not(.active) { color: var(--text); }
+
+    .tab-panel { display: none; flex: 1; overflow-y: auto; }
+    .tab-panel.active { display: flex; flex-direction: column; }
+
+    /* ── Signal panel ── */
+    .signal-panel { padding: 12px; }
+
+    /* Confidence gauge */
+    .gauge-wrap { display: flex; align-items: center; gap: 12px; padding: 10px 0 14px; border-bottom: 1px solid var(--border); margin-bottom: 10px; }
+    .gauge-svg { flex-shrink: 0; }
+    .gauge-info { flex: 1; }
+    .gauge-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+    .gauge-value { font-size: 24px; font-weight: 700; line-height: 1.1; }
+    .gauge-sub   { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+    .stat-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; border-bottom: 1px solid #21262d; }
+    .stat-label { color: var(--muted); font-size: 12px; }
+    .stat-value { font-weight: 600; font-size: 12px; }
+    .green { color: var(--green); } .red { color: var(--red); } .gold { color: var(--gold); } .purple { color: var(--purple); }
+
+    .section-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); margin: 12px 0 6px; }
+
+    #reasoning-box { font-size: 11px; color: var(--muted); line-height: 1.6; padding: 8px 0; }
+
+    /* ── History panel ── */
+    #history-list { flex: 1; overflow-y: auto; }
+    .hist-row { display: grid; grid-template-columns: auto 1fr auto auto; gap: 8px; padding: 7px 12px; border-bottom: 1px solid #21262d; align-items: center; }
+    .hist-row:hover { background: var(--surface); }
+    .hist-time  { color: var(--muted); font-size: 10px; white-space: nowrap; }
+    .hist-price { font-weight: 600; font-size: 12px; }
+    .hist-conf  { color: var(--muted); font-size: 10px; }
+    .hist-sig   { padding: 2px 7px; border-radius: 10px; font-weight: 700; font-size: 10px; }
+    .h-buy  { background: #1a4731; color: var(--green); }
+    .h-sell { background: #4d1a1a; color: var(--red); }
+    .h-hold { background: #2d2a1a; color: var(--gold); }
+    #no-history { padding: 20px; text-align: center; color: var(--muted); }
+
+    /* ── News panel ── */
+    #news-list { flex: 1; overflow-y: auto; }
+    .news-item { padding: 10px 12px; border-bottom: 1px solid #21262d; }
+    .news-item:hover { background: var(--surface); }
+    .news-title { font-size: 12px; font-weight: 500; line-height: 1.4; margin-bottom: 4px; }
+    .news-title a { color: var(--text); text-decoration: none; }
+    .news-title a:hover { color: var(--blue); }
+    .news-meta { display: flex; gap: 8px; font-size: 10px; color: var(--muted); }
+    #news-sentiment-bar { padding: 10px 12px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+    #news-sentiment-bar .label { font-size: 10px; color: var(--muted); text-transform: uppercase; }
+    .sentiment-score-bar { flex: 1; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+    .sentiment-score-fill { height: 100%; border-radius: 3px; transition: width 0.4s; }
+    #no-news { padding: 20px; text-align: center; color: var(--muted); }
+
+    /* ── Watchlist panel ── */
+    #watchlist-body { flex: 1; overflow-y: auto; }
+    .watch-row { display: grid; grid-template-columns: 1fr auto auto auto; gap: 8px; padding: 9px 12px; border-bottom: 1px solid #21262d; align-items: center; }
+    .watch-row:hover { background: var(--surface); }
+    .watch-ticker { font-weight: 700; font-size: 13px; color: var(--blue); }
+    .watch-price  { font-weight: 600; font-size: 12px; }
+    .watch-rsi    { font-size: 11px; color: var(--muted); }
+    .watch-sig    { padding: 2px 7px; border-radius: 10px; font-weight: 700; font-size: 10px; }
+    .memory-section { padding: 10px 12px; border-top: 1px solid var(--border); }
+    .memory-title { font-size: 10px; font-weight: 700; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+    .mem-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 11px; border-bottom: 1px solid #21262d; }
+    .mem-key { color: var(--muted); }
+
+    ::-webkit-scrollbar { width: 3px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ── -->
+<header>
+  <h1>⚡ Stock AI Agent</h1>
+  <span class="pill" id="ticker-pill">—</span>
+  <span class="pill sig-hold" id="signal-pill">HOLD</span>
+  <span id="price-display">—</span>
+  <span class="pill market-closed" id="market-pill">CLOSED</span>
+  <span class="pill paper-pill" id="paper-pill" style="display:none">PAPER</span>
+  <span id="conf-header">conf —/100</span>
+  <span id="last-update">—</span>
+  <button id="run-btn" onclick="triggerRun()">▶ Run Now</button>
+</header>
+
+<!-- ── Layout ── -->
+<div class="layout">
+
+  <!-- Charts -->
+  <div class="chart-col">
+    <div id="main-chart"></div>
+    <div id="rsi-chart"></div>
+  </div>
+
+  <!-- Right panel with tabs -->
+  <div class="right-col">
+    <div class="tab-bar">
+      <div class="tab active" onclick="switchTab('signal')">Signal</div>
+      <div class="tab" onclick="switchTab('history')">History</div>
+      <div class="tab" onclick="switchTab('news')">News</div>
+      <div class="tab" onclick="switchTab('watchlist')">Watchlist</div>
+    </div>
+
+    <!-- Signal tab -->
+    <div class="tab-panel active" id="tab-signal">
+      <div class="signal-panel">
+        <!-- Confidence gauge -->
+        <div class="gauge-wrap">
+          <svg class="gauge-svg" width="64" height="64" viewBox="0 0 64 64">
+            <circle cx="32" cy="32" r="26" fill="none" stroke="#21262d" stroke-width="8"/>
+            <circle id="gauge-arc" cx="32" cy="32" r="26" fill="none"
+              stroke="#3fb950" stroke-width="8"
+              stroke-dasharray="0 163.36"
+              stroke-dashoffset="40.84"
+              stroke-linecap="round"
+              transform="rotate(-90 32 32)"/>
+            <text id="gauge-pct" x="32" y="36" text-anchor="middle"
+              font-size="13" font-weight="700" fill="#e6edf3">—</text>
+          </svg>
+          <div class="gauge-info">
+            <div class="gauge-label">Confidence</div>
+            <div class="gauge-value" id="conf-big">—</div>
+            <div class="gauge-sub" id="conf-sub">Waiting for analysis...</div>
+          </div>
+        </div>
+
+        <div class="section-title">Trade Setup</div>
+        <div class="stat-row"><span class="stat-label">Entry Zone</span> <span class="stat-value" id="s-entry">—</span></div>
+        <div class="stat-row"><span class="stat-label">Target 1</span>   <span class="stat-value green" id="s-t1">—</span></div>
+        <div class="stat-row"><span class="stat-label">Target 2</span>   <span class="stat-value green" id="s-t2">—</span></div>
+        <div class="stat-row"><span class="stat-label">Target 3</span>   <span class="stat-value green" id="s-t3">—</span></div>
+        <div class="stat-row"><span class="stat-label">Stop Loss</span>  <span class="stat-value red"   id="s-stop">—</span></div>
+
+        <div class="section-title">Technicals</div>
+        <div class="stat-row"><span class="stat-label">RSI(14)</span>    <span class="stat-value" id="s-rsi">—</span></div>
+        <div class="stat-row"><span class="stat-label">MACD Hist</span>  <span class="stat-value" id="s-macd">—</span></div>
+        <div class="stat-row"><span class="stat-label">BB Position</span><span class="stat-value" id="s-bb">—</span></div>
+        <div class="stat-row"><span class="stat-label">ATR</span>        <span class="stat-value" id="s-atr">—</span></div>
+        <div class="stat-row"><span class="stat-label">Vol Spike</span>  <span class="stat-value" id="s-vol">—</span></div>
+        <div class="stat-row"><span class="stat-label">Support</span>    <span class="stat-value" id="s-sup">—</span></div>
+        <div class="stat-row"><span class="stat-label">Resistance</span> <span class="stat-value" id="s-res">—</span></div>
+
+        <div class="section-title">News Sentiment</div>
+        <div class="stat-row"><span class="stat-label">Verdict</span>    <span class="stat-value" id="s-sent">—</span></div>
+        <div class="stat-row"><span class="stat-label">Score</span>      <span class="stat-value" id="s-sent-score">—</span></div>
+
+        <div class="section-title">AI Reasoning</div>
+        <div id="reasoning-box">Waiting for first analysis...</div>
+      </div>
+    </div>
+
+    <!-- History tab -->
+    <div class="tab-panel" id="tab-history">
+      <div id="history-list"><div id="no-history">No signals yet.</div></div>
+    </div>
+
+    <!-- News tab -->
+    <div class="tab-panel" id="tab-news">
+      <div id="news-sentiment-bar">
+        <span class="label">Sentiment</span>
+        <div class="sentiment-score-bar">
+          <div class="sentiment-score-fill" id="sent-fill" style="width:50%;background:#d29922"></div>
+        </div>
+        <span id="sent-label" style="font-size:11px;font-weight:700;color:#d29922">NEUTRAL</span>
+      </div>
+      <div id="news-list"><div id="no-news">No news loaded yet.</div></div>
+    </div>
+
+    <!-- Watchlist tab -->
+    <div class="tab-panel" id="tab-watchlist">
+      <div id="watchlist-body"></div>
+      <div class="memory-section" id="memory-section"></div>
+    </div>
+  </div>
+
+</div><!-- end .layout -->
+
+<script>
+// ── Tab switching ──────────────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach((t,i) => {
+    const names = ['signal','history','news','watchlist'];
+    t.classList.toggle('active', names[i] === name);
+  });
+  document.querySelectorAll('.tab-panel').forEach(p => {
+    p.classList.toggle('active', p.id === 'tab-' + name);
+  });
+}
+
+// ── Charts ─────────────────────────────────────────────────────────────────────
+const CHART_OPTS = {
+  layout:      { background: { color: '#0d1117' }, textColor: '#8b949e' },
+  grid:        { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+  crosshair:   { mode: 1 },
+  timeScale:   { borderColor: '#30363d', timeVisible: true },
+  rightPriceScale: { borderColor: '#30363d' },
+};
+
+const mainChart = LightweightCharts.createChart(document.getElementById('main-chart'), CHART_OPTS);
+const rsiChart  = LightweightCharts.createChart(document.getElementById('rsi-chart'),  CHART_OPTS);
+
+// Sync crosshairs
+mainChart.subscribeCrosshairMove(p => {
+  if (p.point) rsiChart.setCrossHairXY(p.point.x, 50, true); else rsiChart.clearCrossHair();
+});
+rsiChart.subscribeCrosshairMove(p => {
+  if (p.point) mainChart.setCrossHairXY(p.point.x, 0, true); else mainChart.clearCrossHair();
+});
+
+const candleSeries = mainChart.addCandlestickSeries({
+  upColor: '#3fb950', downColor: '#f85149',
+  borderUpColor: '#3fb950', borderDownColor: '#f85149',
+  wickUpColor: '#3fb950', wickDownColor: '#f85149',
+});
+
+const volSeries = mainChart.addHistogramSeries({
+  priceFormat: { type: 'volume' },
+  priceScaleId: 'vol',
+  scaleMargins: { top: 0.85, bottom: 0 },
+});
+
+const bbUpperSeries = mainChart.addLineSeries({ color: '#a371f744', lineWidth: 1, lineStyle: 1 });
+const bbMidSeries   = mainChart.addLineSeries({ color: '#a371f722', lineWidth: 1, lineStyle: 2 });
+const bbLowerSeries = mainChart.addLineSeries({ color: '#a371f744', lineWidth: 1, lineStyle: 1 });
+
+const rsiLine = rsiChart.addLineSeries({ color: '#a371f7', lineWidth: 1 });
+const rsiOB   = rsiChart.addLineSeries({ color: '#f8514966', lineWidth: 1, lineStyle: 2 });
+const rsiOS   = rsiChart.addLineSeries({ color: '#3fb95066', lineWidth: 1, lineStyle: 2 });
+
+let signalMarkers = [];
+
+// ── Resize ─────────────────────────────────────────────────────────────────────
+function resizeCharts() {
+  const me = document.getElementById('main-chart');
+  const re = document.getElementById('rsi-chart');
+  mainChart.resize(me.clientWidth, me.clientHeight);
+  rsiChart.resize(re.clientWidth, re.clientHeight);
+}
+window.addEventListener('resize', resizeCharts);
+
+// ── Fetch bars ─────────────────────────────────────────────────────────────────
+async function fetchBars() {
+  try {
+    const res  = await fetch('/api/bars');
+    const data = await res.json();
+    const bars = (data.bars || []).filter(b => b.open && b.high && b.low && b.close);
+    if (!bars.length) return;
+
+    candleSeries.setData(bars.map(b => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })));
+    volSeries.setData(bars.map(b => ({
+      time: b.time, value: b.volume || 0,
+      color: b.close >= b.open ? '#1a473188' : '#4d1a1a88',
+    })));
+
+    // Bollinger from closes
+    const closes = bars.map(b => b.close);
+    const times  = bars.map(b => b.time);
+    const bb     = computeBollinger(closes, times, 20);
+    if (bb.upper.length) {
+      bbUpperSeries.setData(bb.upper);
+      bbMidSeries.setData(bb.mid);
+      bbLowerSeries.setData(bb.lower);
+    }
+
+    // RSI
+    const rsiData = computeRSI(closes, times, 14);
+    if (rsiData.length) {
+      rsiLine.setData(rsiData);
+      rsiOB.setData(rsiData.map(d => ({ time: d.time, value: 70 })));
+      rsiOS.setData(rsiData.map(d => ({ time: d.time, value: 30 })));
+    }
+
+    mainChart.timeScale().fitContent();
+    document.getElementById('ticker-pill').textContent = data.ticker || '—';
+  } catch(e) { console.error('fetchBars:', e); }
+}
+
+// ── Fetch state ────────────────────────────────────────────────────────────────
+async function fetchState() {
+  try {
+    const res  = await fetch('/api/state');
+    const data = await res.json();
+    updateSignalUI(data.state || {}, data.history || []);
+    updateMarketStatus(data.market_open, data.paper_trading);
+    document.getElementById('ticker-pill').textContent = data.ticker || '—';
+  } catch(e) { console.error('fetchState:', e); }
+}
+
+// ── Fetch news ─────────────────────────────────────────────────────────────────
+async function fetchNews() {
+  try {
+    const res  = await fetch('/api/news');
+    const data = await res.json();
+    renderNews(data.news || []);
+  } catch(e) { console.error('fetchNews:', e); }
+}
+
+// ── Fetch watchlist ────────────────────────────────────────────────────────────
+async function fetchWatchlist() {
+  try {
+    const res  = await fetch('/api/watchlist');
+    const data = await res.json();
+    renderWatchlist(data.watchlist || [], data.memory || {});
+  } catch(e) { console.error('fetchWatchlist:', e); }
+}
+
+// ── Update signal UI ───────────────────────────────────────────────────────────
+function updateSignalUI(state, history) {
+  const signal  = state.signal || 'HOLD';
+  const price   = state.current_price || 0;
+  const conf    = state.confidence || 0;
+  const targets = state.targets || [];
+  const macd    = state.macd || {};
+  const bb      = state.bollinger || {};
+
+  // Header
+  const sigPill = document.getElementById('signal-pill');
+  sigPill.textContent  = signal;
+  sigPill.className    = 'pill sig-' + signal.toLowerCase();
+  document.getElementById('price-display').textContent = price ? '$' + price.toFixed(4) : '—';
+  document.getElementById('conf-header').textContent   = `conf ${conf}/100`;
+
+  const ts = state.timestamp ? new Date(state.timestamp).toLocaleTimeString() : '—';
+  document.getElementById('last-update').textContent = 'Updated ' + ts;
+
+  // Confidence gauge
+  updateGauge(conf, signal);
+
+  // Trade setup
+  setText('s-entry', state.entry_zone || '—');
+  setText('s-t1', targets[0] ? '$' + targets[0].toFixed(4) : '—');
+  setText('s-t2', targets[1] ? '$' + targets[1].toFixed(4) : '—');
+  setText('s-t3', targets[2] ? '$' + targets[2].toFixed(4) : '—');
+  setText('s-stop', state.stop_loss ? '$' + state.stop_loss.toFixed(4) : '—');
+
+  // Technicals
+  const rsiEl = document.getElementById('s-rsi');
+  rsiEl.textContent = state.rsi ? state.rsi.toFixed(1) : '—';
+  rsiEl.className = 'stat-value ' + (state.rsi > 70 ? 'red' : state.rsi < 30 ? 'green' : '');
+
+  const mEl = document.getElementById('s-macd');
+  const mh  = macd.histogram || 0;
+  mEl.textContent = mh ? (mh > 0 ? '+' : '') + mh.toFixed(6) : '—';
+  mEl.className = 'stat-value ' + (mh > 0 ? 'green' : mh < 0 ? 'red' : '');
+
+  // BB position
+  const bbP = price && bb.upper ? (
+    price > bb.upper ? '🔴 Above Upper' :
+    price < bb.lower ? '🟢 Below Lower' :
+    price > bb.middle ? 'Upper Half' : 'Lower Half'
+  ) : '—';
+  setText('s-bb', bbP);
+  setText('s-atr', state.atr ? state.atr.toFixed(4) : '—');
+
+  const volEl = document.getElementById('s-vol');
+  if (state.volume_spike) {
+    volEl.textContent = '🔥 YES (' + (state.volume_spike_ratio || '?') + 'x)';
+    volEl.className = 'stat-value gold';
+  } else {
+    volEl.textContent = 'No (' + ((state.volume_spike_ratio || 1).toFixed(1)) + 'x)';
+    volEl.className = 'stat-value';
+  }
+  setText('s-sup', state.support ? '$' + state.support.toFixed(4) : '—');
+  setText('s-res', state.resistance ? '$' + state.resistance.toFixed(4) : '—');
+
+  // Sentiment
+  const sent = state.news_sentiment || 'NEUTRAL';
+  const sentScore = state.sentiment_score || 50;
+  const sentEl = document.getElementById('s-sent');
+  sentEl.textContent = sent;
+  sentEl.className = 'stat-value ' + (sent === 'BULLISH' ? 'green' : sent === 'BEARISH' ? 'red' : 'gold');
+  setText('s-sent-score', sentScore + '/100');
+  updateSentimentBar(sentScore, sent);
+
+  document.getElementById('reasoning-box').textContent = state.reasoning || '—';
+
+  renderHistory(history);
+
+  // Add signal markers to chart
+  if (signal !== 'HOLD' && state.timestamp) {
+    const day = state.timestamp.split('T')[0];
+    const ts2 = Math.floor(new Date(day).getTime() / 1000);
+    const existing = signalMarkers.find(m => m.time === ts2 && m.text === signal);
+    if (!existing) {
+      signalMarkers.push({
+        time:     ts2,
+        position: signal === 'BUY' ? 'belowBar' : 'aboveBar',
+        color:    signal === 'BUY' ? '#3fb950' : '#f85149',
+        shape:    signal === 'BUY' ? 'arrowUp' : 'arrowDown',
+        text:     signal + ' ' + conf,
+      });
+      candleSeries.setMarkers(signalMarkers.sort((a, b) => a.time - b.time));
+    }
+  }
+}
+
+function updateMarketStatus(open, paper) {
+  const pill = document.getElementById('market-pill');
+  pill.textContent = open ? '● OPEN' : '○ CLOSED';
+  pill.className = 'pill ' + (open ? 'market-open' : 'market-closed');
+  document.getElementById('paper-pill').style.display = paper ? '' : 'none';
+}
+
+// ── Confidence gauge ───────────────────────────────────────────────────────────
+function updateGauge(conf, signal) {
+  const circumference = 2 * Math.PI * 26;  // 163.36
+  const filled = (conf / 100) * circumference;
+  const arc    = document.getElementById('gauge-arc');
+  const color  = signal === 'BUY' ? '#3fb950' : signal === 'SELL' ? '#f85149' : '#d29922';
+  arc.setAttribute('stroke-dasharray', filled + ' ' + circumference);
+  arc.setAttribute('stroke', color);
+  document.getElementById('gauge-pct').textContent = conf || '0';
+  document.getElementById('conf-big').textContent  = conf + '%';
+  document.getElementById('conf-big').style.color  = color;
+  const sub = conf >= 80 ? 'Very High Conviction' :
+              conf >= 65 ? 'Clear Directional Bias' :
+              conf >= 50 ? 'Mixed Signals' : 'Low Conviction';
+  document.getElementById('conf-sub').textContent = sub;
+}
+
+// ── Sentiment bar ──────────────────────────────────────────────────────────────
+function updateSentimentBar(score, sentiment) {
+  const fill  = document.getElementById('sent-fill');
+  const label = document.getElementById('sent-label');
+  const color = sentiment === 'BULLISH' ? '#3fb950' : sentiment === 'BEARISH' ? '#f85149' : '#d29922';
+  fill.style.width      = score + '%';
+  fill.style.background = color;
+  label.textContent     = sentiment;
+  label.style.color     = color;
+}
+
+// ── History ────────────────────────────────────────────────────────────────────
+function renderHistory(history) {
+  const list = document.getElementById('history-list');
+  if (!history.length) {
+    list.innerHTML = '<div id="no-history">No signals yet.</div>';
+    return;
+  }
+  list.innerHTML = [...history].reverse().map(h => {
+    const cls  = 'h-' + h.signal.toLowerCase();
+    const time = new Date(h.timestamp).toLocaleTimeString();
+    return `<div class="hist-row">
+      <span class="hist-time">${time}</span>
+      <span class="hist-price">$${Number(h.price).toFixed(4)}</span>
+      <span class="hist-conf">${h.confidence || 0}%</span>
+      <span class="hist-sig ${cls}">${h.signal}</span>
+    </div>`;
+  }).join('');
+}
+
+// ── News ───────────────────────────────────────────────────────────────────────
+function renderNews(news) {
+  const list = document.getElementById('news-list');
+  if (!news.length) {
+    list.innerHTML = '<div id="no-news">No news loaded yet.</div>';
+    return;
+  }
+  list.innerHTML = news.map(n => `
+    <div class="news-item">
+      <div class="news-title">
+        ${n.url ? `<a href="${n.url}" target="_blank">${n.title}</a>` : n.title}
+      </div>
+      <div class="news-meta">
+        <span>${n.source || 'Unknown'}</span>
+        <span>${n.published || ''}</span>
+      </div>
+    </div>`).join('');
+}
+
+// ── Watchlist ──────────────────────────────────────────────────────────────────
+function renderWatchlist(watchlist, memory) {
+  const body = document.getElementById('watchlist-body');
+  body.innerHTML = watchlist.map(w => {
+    const cls = 'watch-sig sig-' + (w.signal || 'hold').toLowerCase();
+    return `<div class="watch-row">
+      <span class="watch-ticker">${w.ticker}</span>
+      <span class="watch-price">$${Number(w.price || 0).toFixed(4)}</span>
+      <span class="watch-rsi">RSI ${Number(w.rsi || 0).toFixed(1)}</span>
+      <span class="${cls} pill">${w.signal || 'HOLD'}</span>
+    </div>`;
+  }).join('');
+
+  const memSec = document.getElementById('memory-section');
+  const keys   = Object.keys(memory);
+  if (!keys.length) { memSec.innerHTML = ''; return; }
+  const rows = keys.map(ticker => {
+    const m = memory[ticker];
+    const icon = m.signal === 'BUY' ? '🟢' : '🔴';
+    return `<div class="mem-row">
+      <span class="mem-key">${icon} ${ticker}</span>
+      <span>Entry $${Number(m.price || 0).toFixed(4)}</span>
+      <span>SL $${Number(m.stop_loss || 0).toFixed(4)}</span>
+    </div>`;
+  }).join('');
+  memSec.innerHTML = `<div class="memory-title">Active Positions</div>${rows}`;
+}
+
+// ── Indicators (client-side) ───────────────────────────────────────────────────
+function computeRSI(closes, times, period) {
+  if (closes.length < period + 1) return [];
+  const result = [];
+  let avgGain = 0, avgLoss = 0;
+  for (let i = 1; i <= period; i++) {
+    const d = closes[i] - closes[i - 1];
+    if (d > 0) avgGain += d; else avgLoss -= d;
+  }
+  avgGain /= period; avgLoss /= period;
+  for (let i = period; i < closes.length; i++) {
+    if (i > period) {
+      const d = closes[i] - closes[i - 1];
+      avgGain = (avgGain * (period - 1) + Math.max(d, 0)) / period;
+      avgLoss = (avgLoss * (period - 1) + Math.max(-d, 0)) / period;
+    }
+    const rs  = avgLoss === 0 ? 100 : avgGain / avgLoss;
+    result.push({ time: times[i], value: parseFloat((100 - 100 / (1 + rs)).toFixed(2)) });
+  }
+  return result;
+}
+
+function computeBollinger(closes, times, period) {
+  const upper = [], mid = [], lower = [];
+  for (let i = period - 1; i < closes.length; i++) {
+    const slice = closes.slice(i - period + 1, i + 1);
+    const mean  = slice.reduce((a, b) => a + b) / period;
+    const std   = Math.sqrt(slice.reduce((s, v) => s + (v - mean) ** 2, 0) / period);
+    upper.push({ time: times[i], value: +(mean + 2 * std).toFixed(6) });
+    mid.push(  { time: times[i], value: +mean.toFixed(6) });
+    lower.push({ time: times[i], value: +(mean - 2 * std).toFixed(6) });
+  }
+  return { upper, mid, lower };
+}
+
+// ── Utils ──────────────────────────────────────────────────────────────────────
+function setText(id, val) { const el = document.getElementById(id); if (el) el.textContent = val; }
+
+// ── Trigger manual run ─────────────────────────────────────────────────────────
+async function triggerRun() {
+  const btn = document.getElementById('run-btn');
+  btn.textContent = '⏳ Running...';
+  btn.disabled = true;
+  try {
+    await fetch('/api/run', { method: 'POST' });
+    setTimeout(async () => {
+      await Promise.all([fetchBars(), fetchState(), fetchNews(), fetchWatchlist()]);
+      btn.textContent = '▶ Run Now';
+      btn.disabled = false;
+    }, 18000);
+  } catch(e) {
+    btn.textContent = '▶ Run Now';
+    btn.disabled = false;
+  }
+}
+
+// ── Bootstrap ──────────────────────────────────────────────────────────────────
+async function init() {
+  await Promise.all([fetchBars(), fetchState(), fetchNews(), fetchWatchlist()]);
+  resizeCharts();
+}
+
+init();
+setInterval(fetchState,     30000);   // state every 30s
+setInterval(fetchNews,     120000);   // news every 2 min
+setInterval(fetchWatchlist, 60000);   // watchlist every 1 min
+setInterval(fetchBars,     300000);   // bars every 5 min
+</script>
+</body>
+</html>

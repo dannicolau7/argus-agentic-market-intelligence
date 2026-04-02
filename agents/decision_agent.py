@@ -1,0 +1,61 @@
+"""
+decision_agent.py — LangGraph node: calls analyzer.py with full context.
+Gate: only flags should_alert=True when confidence >= 65.
+"""
+
+from analyzer import analyze_market
+
+CONFIDENCE_THRESHOLD = 65
+
+
+def decision_node(state: dict) -> dict:
+    ticker = state["ticker"]
+    price  = state.get("current_price", 0.0)
+
+    print(f"🧠 [DecisionAgent] Analyzing {ticker} @ ${price:.4f}...")
+
+    try:
+        result     = analyze_market(state)
+        signal     = result["signal"]
+        confidence = result["confidence"]
+
+        if confidence < CONFIDENCE_THRESHOLD:
+            print(
+                f"⚠️  [DecisionAgent] Confidence {confidence}/100 < threshold {CONFIDENCE_THRESHOLD} "
+                f"— overriding {signal} → HOLD"
+            )
+            signal         = "HOLD"
+            result["signal"] = "HOLD"
+            should_alert   = False
+        else:
+            should_alert = signal in ("BUY", "SELL")
+            emoji = "🟢" if signal == "BUY" else "🔴" if signal == "SELL" else "🟡"
+            print(
+                f"{emoji} [DecisionAgent] {signal}  "
+                f"confidence={confidence}/100  "
+                f"alert={'YES' if should_alert else 'NO'}"
+            )
+
+        return {
+            **state,
+            "signal":       signal,
+            "confidence":   confidence,
+            "entry_zone":   result["entry_zone"],
+            "targets":      result["targets"],
+            "stop_loss":    result["stop_loss"],
+            "reasoning":    result["reasoning"],
+            "should_alert": should_alert,
+        }
+
+    except Exception as e:
+        print(f"❌ [DecisionAgent] Error: {e}")
+        return {
+            **state,
+            "signal":       "HOLD",
+            "confidence":   0,
+            "entry_zone":   f"${price:.4f}",
+            "targets":      [],
+            "stop_loss":    round(price * 0.95, 4),
+            "reasoning":    f"Decision agent failed: {e}",
+            "should_alert": False,
+        }
