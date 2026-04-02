@@ -1,93 +1,117 @@
 """
-news_agent.py — LangGraph node: fetches news from polygon_feed, scores sentiment via Claude.
-Returns: news_sentiment (BULLISH/BEARISH/NEUTRAL), sentiment_score (0-100), news_summary.
+news_agent.py — LangGraph node: fetches Reddit posts from r/wallstreetbets,
+r/stocks, and r/investing using the free public JSON API (no key required).
+Scores sentiment 0-100 by counting positive vs negative words in post titles.
 """
 
-import json
-import anthropic
-from config import ANTHROPIC_API_KEY
+import re
+import requests
 
-_client = None
+# ── Sentiment word lists ───────────────────────────────────────────────────────
+
+POSITIVE_WORDS = {
+    "buy", "bull", "bullish", "moon", "calls", "surge", "up", "gain",
+    "profit", "long", "rocket", "rally", "breakout", "pump", "squeeze",
+    "rip", "green", "wins", "winner", "growth",
+}
+
+NEGATIVE_WORDS = {
+    "sell", "bear", "bearish", "puts", "crash", "down", "loss", "short",
+    "dump", "drop", "falling", "tank", "red", "baghold", "bagholder",
+    "bankrupt", "fraud", "collapse", "bust", "rekt",
+}
+
+SUBREDDITS = ["wallstreetbets", "stocks", "investing"]
+
+HEADERS = {"User-Agent": "stock-ai-agent/1.0 (research tool)"}
 
 
-def _get_client() -> anthropic.Anthropic:
-    global _client
-    if _client is None:
-        _client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    return _client
+# ── Reddit fetcher ─────────────────────────────────────────────────────────────
 
+def _fetch_reddit(ticker: str, subreddit: str, limit: int = 10) -> list[str]:
+    """
+    Returns a list of post titles mentioning `ticker` from the given subreddit.
+    Uses the free public Reddit JSON search endpoint — no API key required.
+    """
+    url = f"https://www.reddit.com/r/{subreddit}/search.json"
+    params = {"q": ticker, "sort": "new", "limit": limit, "restrict_sr": "on"}
+    try:
+        r = requests.get(url, params=params, headers=HEADERS, timeout=10)
+        r.raise_for_status()
+        children = r.json().get("data", {}).get("children", [])
+        return [c["data"]["title"] for c in children if c.get("data", {}).get("title")]
+    except Exception as e:
+        print(f"⚠️  [NewsAgent] Reddit r/{subreddit} fetch failed: {e}")
+        return []
+
+
+# ── Word-count scorer ──────────────────────────────────────────────────────────
+
+def _score_titles(titles: list[str]) -> tuple[str, int, int, int]:
+    """
+    Counts positive / negative word hits across all titles.
+    Returns (sentiment, score_0_100, pos_count, neg_count).
+    """
+    pos = 0
+    neg = 0
+    for title in titles:
+        words = set(re.findall(r"[a-z]+", title.lower()))
+        pos += len(words & POSITIVE_WORDS)
+        neg += len(words & NEGATIVE_WORDS)
+
+    total = pos + neg
+    if total == 0:
+        return "NEUTRAL", 50, pos, neg
+
+    score = round((pos / total) * 100)
+    if score >= 60:
+        sentiment = "BULLISH"
+    elif score <= 40:
+        sentiment = "BEARISH"
+    else:
+        sentiment = "NEUTRAL"
+
+    return sentiment, score, pos, neg
+
+
+# ── LangGraph node ─────────────────────────────────────────────────────────────
 
 def news_node(state: dict) -> dict:
-    raw_news = state.get("raw_news", [])
-    ticker   = state["ticker"]
-    print(f"📰 [NewsAgent] Analyzing news for {ticker}  ({len(raw_news)} articles)...")
+    ticker = state["ticker"]
+    print(f"📰 [NewsAgent] Fetching Reddit sentiment for {ticker}  "
+          f"({', '.join('r/' + s for s in SUBREDDITS)})...")
 
-    if not raw_news:
-        print(f"⚠️  [NewsAgent] No recent news found")
+    all_titles: list[str] = []
+
+    for sub in SUBREDDITS:
+        titles = _fetch_reddit(ticker, sub, limit=10)
+        print(f"   └─ r/{sub}: {len(titles)} posts")
+        all_titles.extend(titles)
+
+    if not all_titles:
+        print(f"⚠️  [NewsAgent] No Reddit posts found for {ticker}")
         return {
             **state,
             "news_sentiment":  "NEUTRAL",
             "sentiment_score": 50,
-            "news_summary":    "No recent news found.",
+            "news_summary":    f"No Reddit posts found for {ticker}.",
         }
 
-    try:
-        news_texts = []
-        for item in raw_news[:8]:
-            title = item.get("title", "")
-            desc  = (item.get("description") or "")[:250]
-            pub   = (item.get("published_utc") or "")[:10]
-            news_texts.append(f"[{pub}] {title}: {desc}")
+    sentiment, score, pos, neg = _score_titles(all_titles)
 
-        news_block = "\n".join(news_texts)
+    # Build a short summary from the top 3 most relevant titles
+    summary_titles = all_titles[:3]
+    summary = " | ".join(t[:80] for t in summary_titles)
 
-        prompt = (
-            f"Analyze the following recent news articles for {ticker} stock.\n\n"
-            f"Return ONLY valid JSON (no markdown fences):\n"
-            f'{{"sentiment": "BULLISH" | "BEARISH" | "NEUTRAL", '
-            f'"score": <integer 0-100 where 0=extremely bearish 50=neutral 100=extremely bullish>, '
-            f'"summary": "<one concise sentence summarising the key themes>"}}\n\n'
-            f"Articles:\n{news_block}"
-        )
-
-        client   = _get_client()
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=150,
-            messages=[{"role": "user", "content": prompt}],
-        )
-
-        text = response.content[0].text.strip()
-        if text.startswith("```"):
-            parts = text.split("```")
-            text  = parts[1] if len(parts) > 1 else text
-            if text.startswith("json"):
-                text = text[4:]
-        text = text.strip()
-
-        data      = json.loads(text)
-        sentiment = str(data.get("sentiment", "NEUTRAL")).upper()
-        score     = max(0, min(100, int(data.get("score", 50))))
-        summary   = str(data.get("summary", ""))
-
-        emoji = "📈" if sentiment == "BULLISH" else "📉" if sentiment == "BEARISH" else "➡️"
-        print(f"✅ [NewsAgent] {emoji} {sentiment}  score={score}/100  {summary[:80]}")
-
-        return {
-            **state,
-            "news_sentiment":  sentiment,
-            "sentiment_score": score,
-            "news_summary":    summary,
-        }
-
-    except json.JSONDecodeError as e:
-        print(f"⚠️  [NewsAgent] JSON parse error: {e}")
-    except Exception as e:
-        print(f"❌ [NewsAgent] Error: {e}")
+    emoji = "📈" if sentiment == "BULLISH" else "📉" if sentiment == "BEARISH" else "➡️"
+    print(
+        f"✅ [NewsAgent] {emoji} {sentiment}  score={score}/100  "
+        f"pos={pos} neg={neg}  posts={len(all_titles)}"
+    )
 
     return {
         **state,
-        "news_sentiment":  "NEUTRAL",
-        "sentiment_score": 50,
-        "news_summary":    "Sentiment analysis unavailable.",
+        "news_sentiment":  sentiment,
+        "sentiment_score": score,
+        "news_summary":    f"Reddit ({len(all_titles)} posts) +{pos}/-{neg}: {summary}",
     }
