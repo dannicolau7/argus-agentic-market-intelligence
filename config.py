@@ -22,3 +22,9 @@ PUSHOVER_USER_KEY = os.getenv("PUSHOVER_USER_KEY", "")
 # App
 TICKER = os.getenv("TICKER", "BZAI")
 MONITOR_INTERVAL = int(os.getenv("MONITOR_INTERVAL", "60"))
+
+# LangSmith — tracing is activated automatically when these are set in the environment.
+# No explicit SDK calls needed; LangGraph picks them up on import.
+LANGCHAIN_TRACING_V2 = os.getenv("LANGCHAIN_TRACING_V2", "false")
+LANGCHAIN_API_KEY    = os.getenv("LANGCHAIN_API_KEY", "")
+LANGCHAIN_PROJECT    = os.getenv("LANGCHAIN_PROJECT", "stock-ai-agent")

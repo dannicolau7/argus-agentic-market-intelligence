@@ -3,11 +3,13 @@ decision_agent.py — LangGraph node: calls analyzer.py with full context.
 Gate: only flags should_alert=True when confidence >= 65.
 """
 
+from langsmith import traceable
 from analyzer import analyze_market
 
 CONFIDENCE_THRESHOLD = 65
 
 
+@traceable(name="decision_agent", tags=["claude", "signal"])
 def decision_node(state: dict) -> dict:
     ticker = state["ticker"]
     price  = state.get("current_price", 0.0)
@@ -40,10 +42,13 @@ def decision_node(state: dict) -> dict:
             **state,
             "signal":       signal,
             "confidence":   confidence,
+            "setup_type":   state.get("setup_type", "general"),
             "entry_zone":   result["entry_zone"],
             "targets":      result["targets"],
             "stop_loss":    result["stop_loss"],
             "reasoning":    result["reasoning"],
+            "action_plan":  result.get("action_plan", ""),
+            "rr_ratio":     result.get("rr_ratio", 0.0),
             "should_alert": should_alert,
         }
 
@@ -53,9 +58,12 @@ def decision_node(state: dict) -> dict:
             **state,
             "signal":       "HOLD",
             "confidence":   0,
+            "setup_type":   state.get("setup_type", "general"),
             "entry_zone":   f"${price:.4f}",
             "targets":      [],
             "stop_loss":    round(price * 0.95, 4),
             "reasoning":    f"Decision agent failed: {e}",
+            "action_plan":  "",
+            "rr_ratio":     0.0,
             "should_alert": False,
         }

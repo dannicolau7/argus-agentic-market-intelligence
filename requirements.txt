@@ -1,6 +1,7 @@
 anthropic>=0.30.0
 langgraph>=0.2.0
 langchain-core>=0.2.0
+langsmith>=0.1.0
 fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
 requests>=2.32.0
@@ -8,3 +9,4 @@ python-dotenv>=1.0.0
 twilio>=9.0.0
 numpy>=1.26.0
 yfinance>=0.2.0
+pytest>=8.0.0

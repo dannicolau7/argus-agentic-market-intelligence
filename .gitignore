@@ -7,3 +7,4 @@ __pycache__/
 dist/
 .venv/
 signals_log.csv
+best_picks_log.csv

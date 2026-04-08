@@ -36,6 +36,9 @@ import yfinance as yf
 
 from agents.tech_agent import _calc_rsi, _ema
 from config import POLYGON_API_KEY, ANTHROPIC_API_KEY
+from features.relative_strength import fetch_benchmarks, compute_rs, SECTOR_ETFS
+from features.news_classifier import classify as classify_news, score as news_score, label as news_label
+from setups import detect_and_score
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -53,10 +56,15 @@ PRICE_MAX         = 50.0
 NEWS_HOURS_WINDOW = 24
 MIN_SCORE         = 100   # score threshold to qualify for Claude
 MAX_NEWS_CHECK    = 40    # max tickers to check news (API rate budget)
+DOLLAR_VOL_MIN    = 100_000   # $100k 5-day avg dollar volume — minimum liquidity gate
 
 BEST_PICKS_COLUMNS = [
-    "date", "ticker", "score", "price_at_pick", "news_headline",
-    "rvol", "rsi", "price_1day_later", "price_3day_later", "actual_gain_loss_pct",
+    "date", "ticker", "setup_type", "total_score",
+    "context_score", "setup_score", "execution_score", "risk_penalty",
+    "price_at_pick", "news_headline", "news_category",
+    "rvol", "rsi", "macd_cross", "ema_cross", "gap_pct",
+    "rs_vs_spy", "dollar_vol_m",
+    "price_1day_later", "price_3day_later", "actual_gain_loss_pct",
 ]
 
 FALLBACK_UNIVERSE = [
@@ -309,33 +317,42 @@ def _check_news(ticker: str, verbose: bool = False) -> dict:
         return {"has_recent": False, "hours_old": 999, "headline": ""}
 
 
-def _get_market_cap(ticker: str) -> float:
-    """Market cap via yfinance fast_info. Returns 0 on failure."""
+def _get_ticker_info(ticker: str) -> dict:
+    """
+    Market cap + sector via yfinance. Returns defaults on failure.
+    Uses fast_info for market cap (quick) and .info for sector (slower but
+    only called for ~20 Gate-2 survivors, so cost is acceptable).
+    """
     try:
-        mc = getattr(yf.Ticker(ticker).fast_info, "market_cap", None)
-        return float(mc) if mc and float(mc) > 0 else 0.0
+        t  = yf.Ticker(ticker)
+        mc = getattr(t.fast_info, "market_cap", None)
+        try:
+            sector = t.info.get("sector", "") or ""
+        except Exception:
+            sector = ""
+        return {
+            "market_cap": float(mc) if mc and float(mc) > 0 else 0.0,
+            "sector":     sector,
+        }
     except Exception:
-        return 0.0
+        return {"market_cap": 0.0, "sector": ""}
 
 
 # ── Scoring ────────────────────────────────────────────────────────────────────
 
-def _score_survivor(data: dict, news: dict) -> dict:
+def _score_survivor(data: dict, news: dict,
+                    spy_closes: np.ndarray = None,
+                    qqq_closes: np.ndarray = None,
+                    sector_closes: np.ndarray = None) -> dict:
     """
-    Score a gate-passing stock. Maximum 225 pts.
+    Layered scoring for a gate-passing stock.
 
-    RVOL scoring      (max  60)
-    News recency      (max  35)
-    RSI position      (max  25)
-    MACD bullish cross       20
-    EMA9 > EMA21             20
-    Gap up                   15
-    Fibonacci support        15
-    Price support            15
-    Market cap < $500M       10
-    Price < $10              10
-    ─────────────────────────────
-    Max total               225
+    Layer 1 — Context  (market conditions, RS, liquidity, catalyst type)
+    Layer 2 — Setup    (quality of the specific chart pattern)
+    Layer 3 — Execution (technical confirmation signals)
+    Layer 4 — Risk     (penalties for earnings risk, overbought, bad catalyst)
+
+    total_score = context + setup + execution - risk
     """
     closes  = data["closes"]
     opens   = data["opens"]
@@ -343,82 +360,125 @@ def _score_survivor(data: dict, news: dict) -> dict:
     volumes = data["volumes"]
     price   = data["price"]
 
-    score   = 0
-    signals = []
-
-    # ── RVOL (max 60) ─────────────────────────────────────────────────────────
-    rv = _rvol(volumes)
-    if rv > 10:
-        score += 60; signals.append(f"RVOL {rv:.1f}x 🔥🔥")
-    elif rv >= 5:
-        score += 50; signals.append(f"RVOL {rv:.1f}x 🔥")
-    elif rv >= 3:
-        score += 35; signals.append(f"RVOL {rv:.1f}x")
-    elif rv >= 2:
-        score += 20; signals.append(f"RVOL {rv:.1f}x")
-
-    # ── News recency (max 35) ─────────────────────────────────────────────────
-    hours_old = news.get("hours_old", 999)
-    if hours_old < 1:
-        score += 35; signals.append("news <1h ⚡")
-    elif hours_old < 4:
-        score += 25; signals.append(f"news {hours_old:.0f}h ago")
-    elif hours_old < 12:
-        score += 15; signals.append(f"news {hours_old:.0f}h ago")
-    elif hours_old <= 24:
-        score += 5
-
-    # ── RSI (max 25) — already filtered 28–67 ────────────────────────────────
-    rsi = _calc_rsi(closes)
-    if 30 <= rsi <= 40:
-        score += 25; signals.append(f"RSI {rsi:.0f} bounce")
-    elif 40 < rsi <= 50:
-        score += 15; signals.append(f"RSI {rsi:.0f}")
-    elif 50 < rsi <= 65:
-        score += 5
-
-    # ── MACD bullish cross (last 3 bars) → +20 ────────────────────────────────
+    rv        = _rvol(volumes)
+    rsi       = data.get("_rsi_cached") or _calc_rsi(closes)
+    gap       = _gap_pct(opens, closes)
     macd_cross = _has_macd_bullish_cross(closes)
-    if macd_cross:
-        score += 20; signals.append("MACD ✅")
+    ema_cross  = _has_ema_bullish_cross(closes)
 
-    # ── EMA9 crossed above EMA21 → +20 ────────────────────────────────────────
-    ema_cross = _has_ema_bullish_cross(closes)
-    if ema_cross:
-        score += 20; signals.append("EMA9>21 ✅")
+    # ══════════════════════════════════════════════════════════════════════════
+    # Layer 1: Context score  (max ~80)
+    # Relative strength, liquidity, news catalyst type, stock profile
+    # ══════════════════════════════════════════════════════════════════════════
+    ctx        = 0
+    ctx_signals = []
 
-    # ── Gap up with volume confirmation → +15 ─────────────────────────────────
-    gap = _gap_pct(opens, closes)
-    if gap >= 2.0:
-        score += 15; signals.append(f"gap +{gap:.1f}%")
+    # Relative strength vs SPY + QQQ + sector ETF (multi-horizon, multi-benchmark)
+    rs = compute_rs(closes,
+                    spy_closes if spy_closes is not None else np.array([]),
+                    qqq_closes if qqq_closes is not None else np.array([]),
+                    sector_closes)
+    if rs["rs_score"] != 0:
+        ctx += rs["rs_score"]
+        if rs["rs_label"]:
+            ctx_signals.append(rs["rs_label"])
 
-    # ── Fibonacci support → +15 ───────────────────────────────────────────────
-    fib_sup = _at_fib_support(closes)
-    if fib_sup:
-        score += 15; signals.append("fib support")
+    # Dollar volume — proxy for liquidity and institutional interest
+    avg_vol_5d   = float(np.mean(volumes[-5:])) if len(volumes) >= 5 else float(volumes[-1])
+    dollar_vol   = price * avg_vol_5d
+    dollar_vol_m = round(dollar_vol / 1_000_000, 3)
+    if dollar_vol >= 5_000_000:
+        ctx += 15; ctx_signals.append(f"${dollar_vol_m:.1f}M dvol")
+    elif dollar_vol >= 1_000_000:
+        ctx += 8;  ctx_signals.append(f"${dollar_vol_m:.1f}M dvol")
+    elif dollar_vol >= 500_000:
+        ctx += 3
 
-    # ── Price support → +15 ───────────────────────────────────────────────────
-    price_sup = _at_price_support(closes, lows)
-    if price_sup:
-        score += 15; signals.append("price support")
+    # News catalyst type — bullish catalysts boost context, bearish go to risk
+    headline      = news.get("headline", "")
+    news_category = classify_news(headline)
+    cat_pts       = news_score(news_category)
+    if cat_pts > 0:
+        ctx += cat_pts
+        ctx_signals.append(news_label(news_category))
 
-    # ── Market cap < $500M → +10 ──────────────────────────────────────────────
+    # Stock profile (asset characteristics belong in context, not execution)
     market_cap = data.get("market_cap", 0)
     if 0 < market_cap < 500_000_000:
-        score += 10; signals.append("small cap")
-
-    # ── Price < $10 → +10 ─────────────────────────────────────────────────────
+        ctx += 10; ctx_signals.append("small cap")
     if price < 10:
-        score += 10; signals.append(f"${price:.2f}")
+        ctx += 8;  ctx_signals.append(f"${price:.2f}")
+
+    context_score = ctx
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Layer 2: Setup score  — score ALL qualifying setups, keep the best
+    # ══════════════════════════════════════════════════════════════════════════
+    setup_result  = detect_and_score(data, news, rsi, rv, gap)
+    setup_type    = setup_result["setup_type"]
+    setup_score   = setup_result["score"]
+    setup_signals = setup_result["signals"]
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Layer 3: Execution score  — pure technical confirmation only
+    # MACD cross, EMA cross, support — not stock profile signals
+    # ══════════════════════════════════════════════════════════════════════════
+    exc        = 0
+    exc_signals = []
+
+    if macd_cross:
+        exc += 20; exc_signals.append("MACD ✅")
+    if ema_cross:
+        exc += 20; exc_signals.append("EMA9>21 ✅")
+    if _at_fib_support(closes):
+        exc += 15; exc_signals.append("fib support")
+    if _at_price_support(closes, lows):
+        exc += 15; exc_signals.append("price support")
+
+    execution_score = exc
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Layer 4: Risk penalty  (subtracted from total)
+    # Bad catalyst, overbought RSI, overextension
+    # ══════════════════════════════════════════════════════════════════════════
+    risk       = 0
+    risk_signals = []
+
+    # Bearish catalyst (offering, downgrade, earnings miss, etc.)
+    if cat_pts < 0:
+        risk += abs(cat_pts)
+        risk_signals.append(news_label(news_category))
+
+    # RSI overbought (outside our gate range but just in case)
+    if rsi > 70:
+        risk += 20; risk_signals.append(f"RSI {rsi:.0f} overbought ⚠️")
+
+    risk_penalty = risk
+
+    # ── Total ─────────────────────────────────────────────────────────────────
+    total_score = context_score + setup_score + execution_score - risk_penalty
+
+    all_signals = ctx_signals + setup_signals + exc_signals
+    if risk_signals:
+        all_signals += [f"⚠️ {s}" for s in risk_signals]
 
     return {
-        "score":      score,
-        "rvol":       round(rv, 2),
-        "rsi":        round(rsi, 1),
-        "gap_pct":    round(gap, 2),
-        "macd_cross": macd_cross,
-        "ema_cross":  ema_cross,
-        "signals":    ", ".join(signals),
+        "score":          total_score,     # primary sort key
+        "context_score":  context_score,
+        "setup_score":    setup_score,
+        "execution_score": execution_score,
+        "risk_penalty":   risk_penalty,
+        "setup_type":     setup_type,
+        "rvol":           round(rv, 2),
+        "rsi":            round(rsi, 1),
+        "gap_pct":        round(gap, 2),
+        "macd_cross":     macd_cross,
+        "ema_cross":      ema_cross,
+        "news_category":  news_category,
+        "rs_vs_spy":      rs["rs_vs_spy"],    # raw 1-day SPY-only (for logs / display)
+        "rs_composite":   rs["rs_composite"], # weighted multi-horizon composite (used for scoring)
+        "dollar_vol_m":   dollar_vol_m,
+        "signals":        ", ".join(all_signals),
     }
 
 
@@ -437,15 +497,23 @@ def _claude_rank(candidates: list, verbose: bool = False) -> dict:
         mc_str   = f"${c.get('market_cap', 0) / 1e6:.0f}M" if c.get("market_cap", 0) > 0 else "unknown"
         macd_lbl = "bullish cross" if c.get("macd_cross") else "neutral"
         ema_lbl  = "EMA9 > EMA21" if c.get("ema_cross") else "neutral"
+        cat_str   = news_label(c.get("news_category", "general"))
+        rs_str    = f"{c.get('rs_vs_spy', 0.0):+.1f}% vs SPY"
+        setup_str = c.get("setup_type", "general")
         stock_blocks.append(
             f"\nStock #{i}: {c['ticker']}\n"
+            f"  Setup:      {setup_str}\n"
             f"  Price:      ${c['price']:.4f}\n"
-            f"  Score:      {c['score']}/225\n"
+            f"  Score:      {c['score']} pts "
+            f"(ctx={c.get('context_score',0)} setup={c.get('setup_score',0)} "
+            f"exec={c.get('execution_score',0)} risk=-{c.get('risk_penalty',0)})\n"
             f"  RVOL:       {c['rvol']:.1f}x\n"
             f"  RSI:        {c['rsi']:.1f}\n"
+            f"  RS vs SPY:  {rs_str}\n"
             f"  MACD:       {macd_lbl}\n"
             f"  EMA:        {ema_lbl}\n"
             f"  Gap:        {c.get('gap_pct', 0):+.1f}%\n"
+            f"  Catalyst:   {cat_str}\n"
             f"  Market cap: {mc_str}\n"
             f"  News:       {c.get('news_headline', '')[:80]}\n"
         )
@@ -527,17 +595,28 @@ def _format_whatsapp(winner: dict, rank2: dict, rank3: dict,
         headline = headline[:57] + "..."
     macd_str  = "bullish cross" if winner.get("macd_cross") else "neutral"
 
+    setup_str = winner.get("setup_type", "general").replace("_", " ").title()
+    ctx_s  = winner.get("context_score", 0)
+    stp_s  = winner.get("setup_score", 0)
+    exc_s  = winner.get("execution_score", 0)
+    rsk_s  = winner.get("risk_penalty", 0)
+
     also = []
     if rank2:
-        also.append(f"#2 {rank2['ticker']} ${rank2['price']:.2f} — score {rank2['score']}/225")
+        r2_setup = rank2.get("setup_type", "general").replace("_", " ").title()
+        also.append(f"#2 {rank2['ticker']} ${rank2['price']:.2f} "
+                    f"[{r2_setup}] score {rank2['score']}")
     if rank3:
-        also.append(f"#3 {rank3['ticker']} ${rank3['price']:.2f} — score {rank3['score']}/225")
+        r3_setup = rank3.get("setup_type", "general").replace("_", " ").title()
+        also.append(f"#3 {rank3['ticker']} ${rank3['price']:.2f} "
+                    f"[{r3_setup}] score {rank3['score']}")
 
     msg = (
         f"BEST STOCK TODAY — {date_str}\n"
         f"─────────────────────\n"
-        f"#1 {winner['ticker']} ${p1:.2f}\n"
-        f"Score: {winner['score']}/225\n"
+        f"#1 {winner['ticker']} ${p1:.2f} [{setup_str}]\n"
+        f"Score: {winner['score']} "
+        f"(ctx={ctx_s} setup={stp_s} exec={exc_s} risk=-{rsk_s})\n"
         f"Why: {claude.get('why', '')}\n"
         f"Expected: {claude.get('expected_move', '')}\n"
         f"Risk: {claude.get('key_risk', '')}\n"
@@ -577,11 +656,22 @@ def log_best_pick(winner: dict):
         row = [
             datetime.now().strftime("%Y-%m-%d"),
             winner["ticker"],
+            winner.get("setup_type", "general"),
             winner["score"],
+            winner.get("context_score", 0),
+            winner.get("setup_score", 0),
+            winner.get("execution_score", 0),
+            winner.get("risk_penalty", 0),
             f"{winner['price']:.6f}",
             winner.get("news_headline", "")[:120],
+            winner.get("news_category", "general"),
             winner["rvol"],
             winner["rsi"],
+            1 if winner.get("macd_cross") else 0,
+            1 if winner.get("ema_cross") else 0,
+            winner.get("gap_pct", 0.0),
+            winner.get("rs_vs_spy", 0.0),
+            winner.get("dollar_vol_m", 0.0),
             "",    # price_1day_later  — filled next day
             "",    # price_3day_later  — filled in 3 days
             "",    # actual_gain_loss_pct
@@ -593,11 +683,40 @@ def log_best_pick(winner: dict):
         print(f"⚠️  [Scanner] Failed to log pick: {e}")
 
 
+def _historical_close_on(ticker: str, target_date) -> float:
+    """
+    Return the actual closing price on the first trading day on or after
+    target_date, using historical bars — not fast_info (which returns today).
+    target_date: datetime.date
+    """
+    from datetime import timedelta
+    try:
+        start = (target_date - timedelta(days=1)).isoformat()
+        end   = (target_date + timedelta(days=7)).isoformat()  # covers weekends/holidays
+        df    = yf.download(ticker, start=start, end=end,
+                            interval="1d", progress=False, auto_adjust=True)
+        if df is None or df.empty:
+            return 0.0
+        for idx in df.index:
+            idx_date = idx.date() if hasattr(idx, "date") else idx
+            if idx_date >= target_date:
+                val = df.loc[idx, "Close"]
+                return float(val.iloc[0]) if hasattr(val, "iloc") else float(val)
+        return 0.0
+    except Exception:
+        return 0.0
+
+
 def update_pick_accuracy():
     """
-    Back-fill price_1day_later / price_3day_later for past picks.
-    Called automatically at the start of each morning scan.
+    Back-fill price_1day_later / price_3day_later for past picks using
+    the actual historical close on the correct forward date, not today's price.
+
+    price_1day_later  → close on pick_date + 1 calendar day (first trading day on/after)
+    price_3day_later  → close on pick_date + 3 calendar days (first trading day on/after)
+    actual_gain_loss_pct → pct change from price_at_pick to price_3day_later
     """
+    from datetime import timedelta
     if not os.path.exists(BEST_PICKS_LOG):
         return
     try:
@@ -614,34 +733,37 @@ def update_pick_accuracy():
                 pick_date = datetime.strptime(row["date"], "%Y-%m-%d").date()
             except ValueError:
                 continue
+
             days_ago = (today - pick_date).days
             price_at = float(row.get("price_at_pick") or 0)
             if price_at <= 0:
                 continue
 
-            try:
-                current_p = float(yf.Ticker(row["ticker"]).fast_info.last_price or 0)
-            except Exception:
-                continue
-            if current_p <= 0:
-                continue
+            # 1-day forward close: need at least 2 calendar days so the target
+            # date has actually closed (pick_date+1 may still be today)
+            if days_ago >= 2 and not row.get("price_1day_later"):
+                target_1d = pick_date + timedelta(days=1)
+                p = _historical_close_on(row["ticker"], target_1d)
+                if p > 0:
+                    row["price_1day_later"] = f"{p:.6f}"
+                    updated = True
 
-            if days_ago >= 1 and not row.get("price_1day_later"):
-                row["price_1day_later"] = f"{current_p:.6f}"
-                updated = True
-
-            if days_ago >= 3 and not row.get("price_3day_later"):
-                row["price_3day_later"]     = f"{current_p:.6f}"
-                pct = (current_p - price_at) / price_at * 100
-                row["actual_gain_loss_pct"] = f"{pct:+.2f}%"
-                updated = True
+            # 3-day forward close: need at least 4 calendar days
+            if days_ago >= 4 and not row.get("price_3day_later"):
+                target_3d = pick_date + timedelta(days=3)
+                p = _historical_close_on(row["ticker"], target_3d)
+                if p > 0:
+                    row["price_3day_later"]     = f"{p:.6f}"
+                    pct = (p - price_at) / price_at * 100
+                    row["actual_gain_loss_pct"] = f"{pct:+.2f}%"
+                    updated = True
 
         if updated:
             with open(BEST_PICKS_LOG, "w", newline="", encoding="utf-8") as f:
-                w = csv.DictWriter(f, fieldnames=BEST_PICKS_COLUMNS)
+                w = csv.DictWriter(f, fieldnames=BEST_PICKS_COLUMNS, restval="")
                 w.writeheader()
                 w.writerows(rows)
-            print("📊 [Scanner] Accuracy log updated")
+            print("📊 [Scanner] Accuracy log updated with real forward closes")
 
     except Exception as e:
         print(f"⚠️  [Scanner] Accuracy update failed: {e}")
@@ -672,14 +794,30 @@ def scan_best_of_day(paper: bool = False, verbose: bool = False,
     universe = [t for t in universe if t.isalpha() and 1 <= len(t) <= 5]
     n_universe = len(universe)
 
+    # ── Pre-fetch SPY + QQQ + all sector ETFs for multi-benchmark RS ─────────
+    print("📈 [Best-of-Day] Fetching SPY + QQQ + sector ETFs...")
+    benchmarks = fetch_benchmarks(include_sectors=True)
+    spy_closes = benchmarks["spy"]
+    qqq_closes = benchmarks["qqq"]
+    loaded = [k.upper() for k, v in benchmarks.items() if len(v) > 0]
+    print(f"✅ [Best-of-Day] Benchmarks loaded: {', '.join(loaded) or 'none — RS will be 0'}")
+
     # ── Bulk OHLCV download ────────────────────────────────────────────────────
     raw_data     = _bulk_download_batched(universe)
     n_downloaded = len(raw_data)
 
+    # ── Gate 0: Dollar volume >= $100k (5-day avg — liquidity floor) ──────────
+    g0 = {}
+    for t, d in raw_data.items():
+        avg_vol = float(np.mean(d["volumes"][-5:])) if len(d["volumes"]) >= 5 else float(d["volumes"][-1])
+        if d["price"] * avg_vol >= DOLLAR_VOL_MIN:
+            g0[t] = d
+    print(f"🚦 Gate 0 (dvol ≥${DOLLAR_VOL_MIN//1000:.0f}k): {n_downloaded:,} → {len(g0):,} stocks")
+
     # ── Gate 1: RVOL >= 2.0 ───────────────────────────────────────────────────
-    g1 = {t: d for t, d in raw_data.items()
+    g1 = {t: d for t, d in g0.items()
           if _rvol(d["volumes"]) >= RVOL_MIN}
-    print(f"🚦 Gate 1 (RVOL ≥{RVOL_MIN:.1f}):  {n_downloaded:,} → {len(g1):,} stocks")
+    print(f"🚦 Gate 1 (RVOL ≥{RVOL_MIN:.1f}):  {len(g0):,} → {len(g1):,} stocks")
 
     # ── Gate 3: RSI 28–67 ─────────────────────────────────────────────────────
     g3 = {}
@@ -732,28 +870,42 @@ def scan_best_of_day(paper: bool = False, verbose: bool = False,
         print("\n⚠️  [Best-of-Day] No stocks with recent news — no pick today.")
         return {}
 
-    # ── Fetch market caps for survivors ────────────────────────────────────────
+    # ── Fetch market caps + sector for survivors ───────────────────────────────
     print(f"\n📊 Scoring {len(g2)} survivors...")
     for ticker, data, _ in g2:
-        data["market_cap"] = _get_market_cap(ticker)
+        info = _get_ticker_info(ticker)
+        data["market_cap"] = info["market_cap"]
+        data["sector"]     = info["sector"]
 
     # ── Score survivors ────────────────────────────────────────────────────────
     scored = []
     for ticker, data, news in g2:
-        sc = _score_survivor(data, news)
+        sector_etf    = SECTOR_ETFS.get(data.get("sector", ""), "")
+        sector_arr    = benchmarks.get(sector_etf.lower(), np.array([]))
+        sector_closes = sector_arr if len(sector_arr) > 0 else None
+        sc = _score_survivor(data, news, spy_closes=spy_closes, qqq_closes=qqq_closes,
+                             sector_closes=sector_closes)
         scored.append({
-            "ticker":        ticker,
-            "price":         data["price"],
-            "score":         sc["score"],
-            "rvol":          sc["rvol"],
-            "rsi":           sc["rsi"],
-            "gap_pct":       sc["gap_pct"],
-            "market_cap":    data.get("market_cap", 0),
-            "macd_cross":    sc["macd_cross"],
-            "ema_cross":     sc["ema_cross"],
-            "news_headline": news.get("headline", ""),
-            "news_hours":    news.get("hours_old", 999),
-            "signals":       sc["signals"],
+            "ticker":         ticker,
+            "price":          data["price"],
+            "score":          sc["score"],
+            "context_score":  sc["context_score"],
+            "setup_score":    sc["setup_score"],
+            "execution_score": sc["execution_score"],
+            "risk_penalty":   sc["risk_penalty"],
+            "setup_type":     sc["setup_type"],
+            "rvol":           sc["rvol"],
+            "rsi":            sc["rsi"],
+            "gap_pct":        sc["gap_pct"],
+            "market_cap":     data.get("market_cap", 0),
+            "macd_cross":     sc["macd_cross"],
+            "ema_cross":      sc["ema_cross"],
+            "news_headline":  news.get("headline", ""),
+            "news_hours":     news.get("hours_old", 999),
+            "news_category":  sc["news_category"],
+            "rs_vs_spy":      sc["rs_vs_spy"],
+            "dollar_vol_m":   sc["dollar_vol_m"],
+            "signals":        sc["signals"],
         })
 
     scored.sort(key=lambda x: x["score"], reverse=True)
@@ -761,13 +913,21 @@ def scan_best_of_day(paper: bool = False, verbose: bool = False,
     if verbose:
         print("\n📋 All scored survivors:")
         for s in scored[:15]:
-            print(f"   {s['ticker']:6s}  {s['score']:3d}/225  "
-                  f"RVOL {s['rvol']:.1f}x  RSI {s['rsi']:.0f}  "
-                  f"| {s['signals'][:65]}")
+            print(f"   {s['ticker']:6s}  {s['score']:3d}pts  "
+                  f"[{s.get('setup_type','general'):15s}]  "
+                  f"ctx={s.get('context_score',0):3d} "
+                  f"setup={s.get('setup_score',0):3d} "
+                  f"exec={s.get('execution_score',0):3d} "
+                  f"risk=-{s.get('risk_penalty',0):2d}  "
+                  f"RS {s.get('rs_vs_spy', 0):+.1f}%  "
+                  f"| {s['signals'][:45]}")
 
     # ── Filter by minimum score ────────────────────────────────────────────────
     qualifiers = [s for s in scored if s["score"] >= MIN_SCORE]
     print(f"\n🎯 Qualifying (score ≥{MIN_SCORE}): {len(qualifiers)} stocks")
+    if qualifiers:
+        print(f"   Top catalyst: {qualifiers[0].get('news_category','general')}  "
+              f"RS {qualifiers[0].get('rs_vs_spy', 0):+.1f}% vs SPY")
 
     if not qualifiers:
         print(f"\n⚠️  [Best-of-Day] No stocks scored ≥{MIN_SCORE} — no pick today.")
@@ -777,8 +937,9 @@ def scan_best_of_day(paper: bool = False, verbose: bool = False,
     print("\nTop 3 finalists:")
     for s in top3:
         print(f"   {'★' if s is top3[0] else ' '} {s['ticker']:6s}  "
-              f"{s['score']:3d}/225  RVOL {s['rvol']:.1f}x  "
-              f"RSI {s['rsi']:.0f}  |  {s['signals'][:55]}")
+              f"{s['score']:3d}pts  [{s.get('setup_type','general')}]  "
+              f"RVOL {s['rvol']:.1f}x  RSI {s['rsi']:.0f}  "
+              f"RS {s.get('rs_vs_spy',0):+.1f}%  cat={s.get('news_category','general')}")
 
     # ── Claude ranking ─────────────────────────────────────────────────────────
     claude = _claude_rank(top3, verbose=verbose)
@@ -926,7 +1087,7 @@ if __name__ == "__main__":
 
     if args.best_of_day:
         result = scan_best_of_day(
-            paper        = True,           # always paper in test mode; remove for live
+            paper        = args.test,
             verbose      = args.verbose,
             max_universe = args.universe,
             extra_tickers = watchlist,

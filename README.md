@@ -1,8 +1,8 @@
 # Stock AI Agent
 
-> AI-powered stock monitoring agent that combines technical analysis, social sentiment, and Claude AI to generate real-time BUY / SELL / HOLD signals with SMS and push notification alerts.
+> AI-powered stock monitoring system that combines three discovery engines, layered technical scoring, news-driven catalyst detection, and Claude AI to generate real-time BUY / SELL / HOLD signals with WhatsApp alerts.
 
-**Version:** v1.0 &nbsp;|&nbsp; **Status:** Active Development
+**Version:** v2.0 &nbsp;|&nbsp; **Status:** Active Development
 
 ---
 
@@ -10,23 +10,46 @@
 
 ### What it does
 
-Stock AI Agent is a fully automated stock monitoring system that runs a multi-agent pipeline every 5 minutes during market hours. For each cycle it:
+Stock AI Agent runs three independent discovery systems simultaneously to ensure no opportunity is missed — whether you already know the ticker or not.
+
+#### Discovery Engine 1 — Watchlist Monitor (every 5 minutes, market hours)
+
+Continuously monitors your saved tickers every 5 minutes during market hours (9:30 AM – 4:00 PM EST). For each cycle it:
 
 1. Fetches real-time price and OHLCV bars (yfinance + Polygon)
-2. Scrapes Reddit for social sentiment across r/wallstreetbets, r/stocks, r/investing
-3. Calculates RSI, MACD, Bollinger Bands, volume spikes, support and resistance
-4. Passes all context to Claude AI which scores a confidence level (0–100)
-5. Fires a BUY or SELL alert via SMS (Twilio) + push notification (Pushover) **only** when confidence ≥ 65
-6. Logs every signal to `signals_log.csv` for accuracy tracking
-7. Streams live data to a browser dashboard with candlestick charts
+2. Scores social sentiment (StockTwits bull/bear ratio + StockTwits velocity)
+3. Calculates RSI, MACD, EMA stack, volume, ATR, support and resistance
+4. Classifies the latest news headline into a catalyst category
+5. Computes relative strength vs SPY and QQQ across 1d / 5d / 20d
+6. Detects the best-matching setup pattern (gap-and-go, breakout, pullback, oversold bounce)
+7. Builds a 4-layer score: context + setup + execution − risk penalties
+8. Passes everything to Claude AI which decides BUY / SELL / HOLD with confidence
+9. Fires a WhatsApp alert via Twilio when confidence ≥ 65
+
+#### Discovery Engine 2 — Morning Market Scanner (7:45 AM EST daily)
+
+Scans all ~6,000 US stocks every morning before the open to find the single best opportunity of the day. No watchlist needed — it finds stocks you've never heard of.
+
+1. Applies Gate 0: dollar volume ≥ $100k (eliminates illiquid garbage)
+2. Runs the full 4-layer scoring pipeline on every survivor
+3. Ranks by total score and selects the top candidate
+4. Sends a pre-market WhatsApp summary with entry zone, targets, and stop
+5. Logs pick to `best_picks_log.csv` and tracks forward accuracy at +1d and +3d
+
+#### Discovery Engine 3 — 24/7 News Watcher (every 5 minutes, around the clock)
+
+Monitors news for **all** US stocks — not just your watchlist — by polling the Polygon news API every 5 minutes, day and night. When a new article appears on any ticker:
+
+1. Quick gate: price $0.50–$50, average volume ≥ 50k (prevents garbage)
+2. 4-hour cooldown per ticker (no alert storms)
+3. Classifies the headline (FDA approval, earnings beat, dilution offering, etc.)
+4. If bullish catalyst: runs the full pipeline and sends a WhatsApp alert
 
 ### Who it's for
 
 - Retail traders who want AI-assisted signal generation on small/mid cap stocks
 - Developers learning LangGraph multi-agent patterns with real financial data
-- Anyone who wants to build on top of a working, free-tier signal pipeline
-
-### Current Version: v1.0
+- Anyone who wants a 24/7 news-driven discovery system without paying for premium data
 
 ---
 
@@ -37,9 +60,13 @@ Stock AI Agent is a fully automated stock monitoring system that runs a multi-ag
 | Agent orchestration | LangGraph + LangChain | Multi-agent pipeline, state management | Free |
 | AI reasoning | Claude API (claude-sonnet-4-6) | Signal interpretation, confidence scoring | Pay-per-use |
 | Historical data | Polygon.io | Daily OHLCV bars, news, ticker details | Free tier |
-| Real-time data | yfinance | Live price, intraday 5-min candles | Free |
-| Social sentiment | Reddit JSON API | WSB / stocks / investing post sentiment | Free, no auth |
-| SMS alerts | Twilio | BUY/SELL signal SMS delivery | Free trial |
+| Real-time data | yfinance | Live price, intraday 5-min candles, benchmarks | Free |
+| Social sentiment | StockTwits API | Bull/bear ratio + message velocity | Free, no auth |
+| News classification | features/news_classifier.py | Phrase-level catalyst detection | Free (local) |
+| Relative strength | features/relative_strength.py | Multi-horizon RS vs SPY + QQQ | Free (local) |
+| Setup detection | setups/ (4 modules) | Gap-and-go, breakout, pullback, bounce | Free (local) |
+| Self-learning | self_learner.py | Tracks signal win rates, adjusts weights | Free (local) |
+| WhatsApp alerts | Twilio WhatsApp API | BUY/SELL signal delivery | Free sandbox |
 | Push notifications | Pushover | iOS/Android push notifications | $5 one-time |
 | Dashboard server | FastAPI + uvicorn | REST API + HTML serving | Free |
 | Chart UI | TradingView Lightweight Charts | Candlestick chart, RSI panel, markers | Free |
@@ -51,14 +78,18 @@ Stock AI Agent is a fully automated stock monitoring system that runs a multi-ag
 ```
 stock-ai-agent/
 │
-├── main.py                  # Entry point — monitoring loop, FastAPI server, market hours
+├── main.py                  # Entry point — three async loops, FastAPI server, market hours
 ├── config.py                # Loads all API keys from .env via python-dotenv
 ├── graph.py                 # Builds and compiles the LangGraph pipeline
 ├── analyzer.py              # Calls Claude API with full market context → structured signal
 ├── polygon_feed.py          # Polygon.io + yfinance data layer (bars, price, news)
-├── alerts.py                # Twilio SMS + Pushover push notification senders
+├── alerts.py                # Twilio WhatsApp + Pushover senders
 ├── logger.py                # Appends every BUY/SELL signal to signals_log.csv
-├── backtest.py              # Rule-based backtester — same logic as live agent
+├── market_scanner.py        # Morning scanner — scans ~6k stocks, picks best of day
+├── news_watcher.py          # 24/7 news-driven stock discovery loop
+├── scheduler.py             # Daily event scheduler (10 timed events)
+├── self_learner.py          # Signal win-rate tracker — learns from past picks
+├── backtest.py              # Rule-based backtester
 ├── watchlist_manager.py     # Persist tickers to watchlist.json between sessions
 ├── watchlist.json           # Saved ticker watchlist
 ├── quick_check.py           # Instant price + news snapshot for any ticker(s)
@@ -67,11 +98,23 @@ stock-ai-agent/
 ├── .env.example             # Template for .env setup
 │
 ├── agents/
-│   ├── data_agent.py        # Node 1 — fetches price, bars, volume, news from Polygon/yfinance
-│   ├── news_agent.py        # Node 2 — Reddit sentiment scoring (no API key required)
-│   ├── tech_agent.py        # Node 3 — RSI, MACD, Bollinger Bands, ATR, volume spike
+│   ├── data_agent.py        # Node 1 — fetches price, bars, volume, news
+│   ├── news_agent.py        # Node 2 — StockTwits sentiment + news classification
+│   ├── tech_agent.py        # Node 3 — RSI, MACD, EMA stack, ATR, volume
 │   ├── decision_agent.py    # Node 4 — calls analyzer.py, gates on confidence >= 65
-│   └── alert_agent.py       # Node 5 — fires SMS + push, respects paper trading mode
+│   └── alert_agent.py       # Node 5 — fires WhatsApp + push, respects paper mode
+│
+├── features/
+│   ├── __init__.py
+│   ├── relative_strength.py # Multi-horizon RS vs SPY + QQQ (1d / 5d / 20d composite)
+│   └── news_classifier.py   # Phrase-level headline categorisation + score adjustments
+│
+├── setups/
+│   ├── __init__.py          # detect_and_score() — scores all matching setups, returns best
+│   ├── gap_and_go.py        # Gap ≥ 3% + RVOL ≥ 3x + RSI ≤ 67
+│   ├── breakout.py          # Price ≥ 20-day high + RVOL ≥ 2x + RSI 50–67
+│   ├── first_pullback.py    # EMA9 > EMA21 > EMA50, price near EMA9, RSI 38–55
+│   └── oversold_bounce.py   # RSI ≤ 35 + RVOL ≥ 2x + price near 20-bar support
 │
 └── dashboard/
     └── index.html           # Live trading terminal — candlesticks, RSI, signal log, news
@@ -82,75 +125,134 @@ stock-ai-agent/
 ```
 fetch_data → analyze_news → analyze_tech → decide → alert
     │              │              │            │         │
- price/bars    Reddit score    RSI/MACD/BB  Claude AI  SMS+Push
+ price/bars   StockTwits     RSI/MACD/EMA  Claude AI  WhatsApp
+              RS vs SPY/QQQ  setup detect   4-layer    +Pushover
+              news classify  execution      score
 ```
 
 ---
 
 ## 4. Signal Sources & Quality
 
-| Signal | Source | Cost | Built | Reliability |
+| Signal | Source | Cost | Status | Reliability |
 |---|---|---|---|---|
-| RSI (14) | Calculated from bars | Free | ✅ | ⭐⭐⭐⭐ |
-| MACD (12/26/9) | Calculated from bars | Free | ✅ | ⭐⭐⭐⭐ |
-| Volume spike (>2× avg) | yfinance / Polygon | Free | ✅ | ⭐⭐⭐⭐⭐ |
-| Bollinger Bands (20, 2σ) | Calculated from bars | Free | ✅ | ⭐⭐⭐ |
+| RSI (14) | Calculated from daily bars | Free | ✅ | ⭐⭐⭐⭐ |
+| MACD (12/26/9) | Calculated from daily bars | Free | ✅ | ⭐⭐⭐⭐ |
+| EMA Stack (9/21/50) | Calculated from daily bars | Free | ✅ | ⭐⭐⭐⭐ |
+| Volume / RVOL | yfinance / Polygon | Free | ✅ | ⭐⭐⭐⭐⭐ |
+| ATR | Calculated from OHLCV | Free | ✅ | ⭐⭐⭐⭐ |
 | Support / Resistance | 20-bar high/low | Free | ✅ | ⭐⭐⭐⭐ |
-| News sentiment | Polygon news + Reddit | Free | ✅ | ⭐⭐⭐ |
-| Social sentiment | Reddit (WSB/stocks/investing) | Free | ✅ | ⭐⭐ |
+| Relative Strength (1d/5d/20d) | vs SPY + QQQ via yfinance | Free | ✅ | ⭐⭐⭐⭐⭐ |
+| Social sentiment | StockTwits bull/bear + velocity | Free | ✅ | ⭐⭐⭐ |
+| News classification | Polygon headlines (local NLP) | Free | ✅ | ⭐⭐⭐⭐ |
+| Setup pattern | gap_and_go / breakout / pullback / bounce | Free | ✅ | ⭐⭐⭐⭐ |
+| Self-learned weights | CSV signal win-rate tracker | Free | ✅ | ⭐⭐⭐ |
 | Options flow | Unusual Whales | $50/mo | ❌ Not yet | ⭐⭐⭐⭐⭐ |
 | Dark pool prints | Unusual Whales | $50/mo | ❌ Not yet | ⭐⭐⭐⭐⭐ |
 | Insider trading | SEC EDGAR | Free | ❌ Not yet | ⭐⭐⭐⭐⭐ |
-| Real-time news | Benzinga | $50/mo | ❌ Not yet | ⭐⭐⭐⭐ |
 
 ---
 
-## 5. Confidence Scoring System
+## 5. Scoring System
 
-Each cycle Claude scores the combined signal confluence from 0–100. The signal only fires if the score reaches the threshold.
+Scores are built in four independent layers. There is no fixed maximum — a perfect setup can score 150+, a weak one 30.
 
-| Signal Component | Bullish Condition | Points |
+### Layer 1 — Context Score (market fit)
+
+| Signal | Condition | Points |
 |---|---|---|
-| RSI | < 30 (oversold) | +30 |
-| RSI | 30–40 range | +15 |
-| MACD | Histogram crosses positive (bullish crossover) | +25 |
-| MACD | Histogram positive (bullish drift) | +10 |
-| Bollinger Bands | Price below lower band | +20 |
-| Volume spike | Current volume > 2× 20-bar average | +15 |
+| Relative strength | RS composite ≥ +12% vs SPY+QQQ | +30 |
+| Relative strength | RS composite ≥ +7% | +22 |
+| Relative strength | RS composite ≥ +3% | +12 |
+| Dollar volume | ≥ $5M/day | +15 |
+| Dollar volume | ≥ $1M/day | +8 |
+| Bullish catalyst | FDA approval, earnings beat, contract win | +10 to +25 |
+| Small cap | Market cap ≤ $500M | +10 |
+| Price | < $10 (momentum-friendly) | +5 |
+| Relative strength | RS composite ≤ -7% (lagging market) | −20 |
 
-Bearish scoring is mirrored (RSI > 70, MACD crosses negative, price above upper BB, volume spike down).
+### Layer 2 — Setup Score (pattern quality)
+
+All qualifying setups are scored; the **highest-scoring** setup wins (not the first match).
+
+| Setup | Hard Filters | Max Score |
+|---|---|---|
+| Gap and Go | Gap ≥ 3%, RVOL ≥ 3x, RSI ≤ 67 | ~120 |
+| Oversold Bounce | RSI ≤ 35, RVOL ≥ 2x, within 5% of 20-bar support | ~110 |
+| Breakout | Price ≥ 20-day high, RVOL ≥ 2x, RSI 50–67 | ~115 |
+| First Pullback | EMA9 > EMA21 > EMA50, near EMA9, RSI 38–55 | ~90 |
+| General | No pattern — RVOL and news bonus only | ~50 |
+
+### Layer 3 — Execution Score (technical confirmation only)
+
+| Signal | Condition | Points |
+|---|---|---|
+| MACD | Bullish crossover (hist crosses 0 from below) | +20 |
+| MACD | Histogram positive | +8 |
+| EMA cross | EMA9 crosses above EMA21 | +15 |
+| EMA cross | EMA9 > EMA21 (aligned bullish) | +6 |
+| Fib support | Price within 2% of 38.2% or 61.8% fib | +12 |
+| Price support | Within 3% of 20-bar low | +10 |
+
+### Layer 4 — Risk Penalty
+
+| Signal | Condition | Penalty |
+|---|---|---|
+| Bearish catalyst | Dilution, FDA rejection, earnings miss | −15 to −25 |
+| Overbought | RSI ≥ 75 | −20 |
+| Overbought | RSI ≥ 68 | −10 |
+
+### Alert threshold
 
 ```
-Score 80–100  →  Very high conviction   → BUY or SELL fires
-Score 65–79   →  Clear directional bias → BUY or SELL fires
-Score 50–64   →  Mixed signals          → Forced to HOLD
-Score 0–49    →  Opposing signals       → Forced to HOLD
-
-Threshold: score >= 65 required to send alert
+Total score ≥ 68  AND  Claude confidence ≥ 65  →  WhatsApp alert fires
+Otherwise  →  HOLD (no alert sent)
 ```
 
-Claude's final reasoning is included in the alert and logged to `signals_log.csv`.
+Score breakdown is shown in every WhatsApp alert:
+
+```
+Score: 142 (ctx=45 setup=67 exec=50 risk=-20)
+```
 
 ---
 
-## 6. API Keys Required
+## 6. News Classification
+
+Headlines from the Polygon news API are classified into 10 categories using phrase-level matching (not single words — to prevent false positives like "cloud offering" triggering dilution).
+
+| Category | Example Phrases | Score Adj |
+|---|---|---|
+| fda_approval | "FDA approves", "FDA clearance", "breakthrough designation" | +25 |
+| earnings_beat | "beats estimates", "raises guidance", "record revenue" | +25 |
+| contract_win | "wins contract", "awarded contract", "defense contract" | +20 |
+| partnership | "strategic partnership", "joint venture", "licensing agreement" | +15 |
+| upgrade | "upgrades to buy", "price target raised", "initiates buy" | +10 |
+| general | No match | 0 |
+| downgrade | "downgrades to sell", "price target cut" | −10 |
+| earnings_miss | "misses estimates", "lowered guidance", "swings to loss" | −20 |
+| offering_dilution | "secondary offering", "private placement", "prospectus supplement" | −25 |
+| fda_rejection | "FDA rejects", "complete response letter", "refuse to file" | −25 |
+
+---
+
+## 7. API Keys Required
 
 | Variable | Where to Get It | Cost |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com) | Pay-per-use (already have it) |
+| `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com) | Pay-per-use |
 | `POLYGON_API_KEY` | [polygon.io/dashboard](https://polygon.io/dashboard) | Free tier |
-| `TWILIO_ACCOUNT_SID` | [twilio.com/console](https://twilio.com/console) | Free trial |
-| `TWILIO_AUTH_TOKEN` | [twilio.com/console](https://twilio.com/console) | Free trial |
-| `TWILIO_FROM_NUMBER` | Twilio console → Phone Numbers | Free trial number |
-| `TWILIO_TO_NUMBER` | Your personal phone number | — |
-| `PUSHOVER_APP_TOKEN` | [pushover.net](https://pushover.net) → Your Apps | $5 one-time |
-| `PUSHOVER_USER_KEY` | [pushover.net](https://pushover.net) → Settings | $5 one-time |
+| `TWILIO_ACCOUNT_SID` | [twilio.com/console](https://twilio.com/console) | Free sandbox |
+| `TWILIO_AUTH_TOKEN` | [twilio.com/console](https://twilio.com/console) | Free sandbox |
+| `TWILIO_FROM_NUMBER` | Twilio console → WhatsApp Sandbox | `whatsapp:+14155238886` |
+| `TWILIO_TO_NUMBER` | Your WhatsApp number | e.g. `whatsapp:+40...` |
+| `PUSHOVER_APP_TOKEN` | [pushover.net](https://pushover.net) → Your Apps | $5 one-time (optional) |
+| `PUSHOVER_USER_KEY` | [pushover.net](https://pushover.net) → Settings | $5 one-time (optional) |
 
 ### `.env` setup
 
 ```bash
 cp .env.example .env
-# then fill in your keys:
 nano .env
 ```
 
@@ -159,17 +261,16 @@ ANTHROPIC_API_KEY=sk-ant-...
 POLYGON_API_KEY=...
 TWILIO_ACCOUNT_SID=AC...
 TWILIO_AUTH_TOKEN=...
-TWILIO_FROM_NUMBER=+1xxxxxxxxxx
-TWILIO_TO_NUMBER=+1xxxxxxxxxx
-PUSHOVER_APP_TOKEN=...
-PUSHOVER_USER_KEY=...
-TICKER=BZAI
+TWILIO_FROM_NUMBER=whatsapp:+14155238886
+TWILIO_TO_NUMBER=whatsapp:+40xxxxxxxxx
+PUSHOVER_APP_TOKEN=...        # optional
+PUSHOVER_USER_KEY=...         # optional
 MONITOR_INTERVAL=300
 ```
 
 ---
 
-## 7. How to Run
+## 8. How to Run
 
 ### Install dependencies
 
@@ -186,31 +287,33 @@ python3 config.py
 # Test Polygon + yfinance connection
 python3 polygon_feed.py
 
-# Quick price and news snapshot (default tickers)
-python3 quick_check.py
-
-# Quick check specific tickers
+# Quick price and news snapshot
 python3 quick_check.py BZAI AAPL NVDA
 ```
 
 ### Run the agent
 
 ```bash
-# Paper trading — full pipeline, no real SMS/push sent
+# Paper trading — full pipeline, no real WhatsApp alerts sent
 python3 main.py --ticker BZAI AWRE LTRX BBAI SOUN --paper
 
-# Live monitoring — fires real alerts
+# Live monitoring — fires real WhatsApp alerts
 python3 main.py --ticker BZAI AWRE LTRX BBAI SOUN
 
 # Monitor tickers from watchlist.json (no --ticker flag needed)
 python3 main.py --paper
 
 # Custom scan interval (every 2 minutes)
-python3 main.py --ticker BZAI AWRE LTRX BBAI SOUN --interval 120
+python3 main.py --ticker BZAI --interval 120
 
 # Custom dashboard port
-python3 main.py --ticker BZAI AWRE LTRX BBAI SOUN --port 8080
+python3 main.py --ticker BZAI --port 8080
 ```
+
+`main.py` starts all three engines automatically:
+- Watchlist monitoring loop (every `MONITOR_INTERVAL` seconds, market hours)
+- Daily scheduler (7:45 AM scanner, 4:30 PM report, etc.)
+- 24/7 news watcher (every 5 minutes, all clocks)
 
 ### Watchlist management
 
@@ -220,13 +323,20 @@ python3 main.py --remove NVDA     # remove ticker from watchlist.json
 python3 main.py --list            # print current watchlist
 ```
 
+### Run the morning scanner manually
+
+```bash
+# Scan all ~6,000 US stocks and show the best pick (paper — no alert)
+python3 market_scanner.py --paper
+
+# Live run — sends WhatsApp if a strong pick is found
+python3 market_scanner.py
+```
+
 ### Backtesting
 
 ```bash
-# Backtest last 30 days
 python3 backtest.py --ticker BZAI --days 30
-
-# Backtest 90 days, 10-bar forward window
 python3 backtest.py --ticker AAPL --days 90 --forward 10
 ```
 
@@ -238,125 +348,160 @@ Once `main.py` is running, open your browser:
 http://localhost:8000
 ```
 
-The dashboard auto-polls every 30 seconds for new signals. Tabs: **Signal** · **History** · **News** · **Watchlist**
+Tabs: **Signal** · **History** · **News** · **Watchlist**
 
 ---
 
-## 8. Alert Format
+## 9. Alert Format
 
-Every BUY or SELL signal is sent as both an SMS and a push notification in this format:
+Every BUY or SELL signal is sent as a WhatsApp message:
 
 ```
-🟢 BUY — BZAI
+🟢 BUY — BZAI  [gap_and_go]
 Price:      $1.7900
-Entry Zone: $1.75 - $1.85
+Entry Zone: $1.75 – $1.85
 Targets:    $1.95 / $2.10 / $2.35
 Stop Loss:  $1.62
-RSI:        28.4
-MACD Hist:  +0.002341
+RSI:        34.2  |  RVOL: 4.8x
+Score: 142 (ctx=45 setup=67 exec=50 risk=-20)
+Signals: gap +8.3%, RVOL 4.8x 🔥, RS +9.2% vs mkt, earnings beat 🟢
 
-RSI oversold at 28 with MACD bullish crossover confirming
-momentum reversal. Volume spike 3.2x average suggests
-institutional accumulation near the $1.65 support level.
+RSI oversold with gap-and-go setup on earnings beat catalyst.
+RVOL 4.8x confirms institutional entry near the $1.65 support.
 ```
 
 ```
-🔴 SELL — BZAI
+🔴 SELL — BZAI  [breakout_fail]
 Price:      $1.9900
-Entry Zone: $1.95 - $2.00
+Entry Zone: $1.95 – $2.00
 Targets:    $1.78 / $1.65 / $1.50
 Stop Loss:  $2.14
-RSI:        74.1
-MACD Hist:  -0.003812
+RSI:        74.1  |  RVOL: 2.1x
+Score: 78 (ctx=20 setup=38 exec=25 risk=-5)
+Signals: RSI 74 overbought, share offering 🔴
 
-RSI overbought at 74 with MACD bearish crossover. Price
-rejected at resistance with elevated volume confirming
-distribution. Stop above recent high at $2.14.
+RSI overbought on dilution catalyst. MACD bearish crossover with
+price rejecting at resistance. Stop above recent high $2.14.
 ```
 
 HOLD signals are **never** sent — alerts only fire when confidence ≥ 65.
 
 ---
 
-## 9. Data Sources Explained
+## 10. Daily Scheduler
 
-### Polygon.io (free tier)
+The scheduler runs 10 timed events each trading day:
 
-- **What it provides:** Adjusted daily OHLCV bars (up to 2 years), previous day close, company details, news headlines
-- **What it doesn't provide on free tier:** Real-time quotes, intraday bars, options data, WebSocket streaming
-- **Rate limit:** 5 API calls/minute on free tier
-- **Used for:** Historical bars for RSI/MACD/BB calculation, news feed, ticker metadata
-
-### yfinance (free, no key)
-
-- **What it provides:** Real-time last price (`fast_info['last_price']`), intraday bars (1m, 5m, 15m, 30m, 1h), fundamentals
-- **Why we use it:** Polygon free tier only gives previous close — yfinance fills the gap with a live price
-- **Used for:** `get_current_price()` (primary), `get_intraday_bars()` (5-min candles for dashboard)
-- **Limitation:** Unofficial API, can occasionally be rate-limited; Polygon is the fallback
-
-### Reddit (free, no auth)
-
-- **Subreddits monitored:** r/wallstreetbets · r/stocks · r/investing
-- **Endpoint:** `https://www.reddit.com/r/{sub}/search.json?q={ticker}&sort=new&limit=10`
-- **Scoring method:** Count positive vs negative keyword hits across all post titles
-  - **Positive keywords:** buy, bull, bullish, moon, calls, surge, up, gain, profit, long, rocket, rally, breakout, pump, squeeze, rip, green, wins, winner, growth
-  - **Negative keywords:** sell, bear, bearish, puts, crash, down, loss, short, dump, drop, falling, tank, red, baghold, bagholder, bankrupt, fraud, collapse, bust, rekt
-  - **Score formula:** `(positive_hits / total_hits) × 100`
-  - BULLISH ≥ 60 · BEARISH ≤ 40 · NEUTRAL otherwise
-- **Limitation:** Small-cap tickers may have few posts; score is a rough proxy, not professional sentiment
+| Time (EST) | Event |
+|---|---|
+| 7:45 AM | Morning market scanner — best-of-day pick sent via WhatsApp |
+| 8:00 AM | Pre-market news scan — any high-conviction catalyst alerts |
+| 9:00 AM | Market open prep — watchlist summary |
+| 9:30 AM | Market open — monitoring loop starts |
+| 12:00 PM | Midday check — any new setups emerging |
+| 2:00 PM | Power hour prep |
+| 3:30 PM | Final 30 min alert if strong signal |
+| 4:00 PM | Market close — monitoring loop pauses |
+| 4:30 PM | Daily performance report via WhatsApp |
+| 5:00 PM | Pick accuracy update — 1d forward returns logged |
 
 ---
 
-## 10. Roadmap
+## 11. Self-Learner
 
-### v1.0 — Current ✅
+`self_learner.py` reads `best_picks_log.csv` after the market closes and updates signal weights based on which signals were present in winning vs losing picks.
+
+**Tracked signals:**
+
+| Signal | CSV column | Notes |
+|---|---|---|
+| Volume spike | `rvol` | RVOL ≥ 3x tagged as volume signal |
+| RSI bounce | `rsi` | RSI ≤ 35 at entry |
+| RSI momentum | `rsi` | RSI 40–55 in trend |
+| MACD cross | `macd_cross` | 1 = bullish crossover at entry |
+| EMA stack | `ema_cross` | 1 = EMA9 > EMA21 > EMA50 |
+| Gap | `gap_pct` | Gap ≥ 3% |
+| Bullish news | `news_category` | Any BULLISH_CATEGORIES hit |
+
+Weights are loaded at scanner startup and adjust the scoring multipliers on each signal over time.
+
+---
+
+## 12. Data Sources Explained
+
+### Polygon.io (free tier)
+
+- **Provides:** Adjusted daily OHLCV bars (up to 2 years), previous-day close, company details, news headlines
+- **Rate limit:** 5 API calls/minute
+- **Used for:** Historical bars (RSI/MACD/EMA), news feed, ticker metadata, all-stock news polling (news watcher)
+
+### yfinance (free, no key)
+
+- **Provides:** Real-time last price, intraday bars (1m/5m/15m/1h), SPY/QQQ benchmark closes
+- **Used for:** Live price, dashboard candles, RS computation, quick gate in news watcher
+- **Limitation:** Unofficial API, occasional rate-limiting; Polygon is the fallback for price
+
+### StockTwits (free, no key)
+
+- **Endpoint:** `https://api.stocktwits.com/api/2/streams/symbol/{ticker}.json`
+- **Provides:** Bull/bear ratio (% of messages tagged bullish vs bearish), message count velocity
+- **Scoring:** Bull ratio ≥ 65% → +15 pts; velocity ≥ 2x → additional +10 pts
+- **Limitation:** No message text — ratio and count only; thin coverage on very small caps
+
+---
+
+## 13. Roadmap
+
+### v1.0 — Shipped ✅
 
 - [x] Multi-agent LangGraph pipeline (data → news → tech → decision → alert)
 - [x] RSI, MACD, Bollinger Bands, volume spike, support/resistance
-- [x] Reddit social sentiment (r/WSB, r/stocks, r/investing) — no API key
 - [x] Claude AI confidence scoring with 65-threshold gate
-- [x] SMS alerts via Twilio
+- [x] WhatsApp alerts via Twilio
 - [x] Push notifications via Pushover
 - [x] FastAPI dashboard with TradingView candlestick chart
 - [x] Paper trading mode
-- [x] `quick_check.py` — instant price/news snapshot
 - [x] Signal logger → `signals_log.csv`
 - [x] Watchlist persistence (`watchlist.json`)
 - [x] Market hours awareness (9:30 AM – 4:00 PM EST)
 - [x] Daily report at 4:30 PM EST
 
-### v1.1 — Next 🔜
+### v2.0 — Current ✅
 
-- [ ] Intraday 5-min bars on dashboard (yfinance)
-- [ ] Backtesting module with win rate stats
+- [x] Multi-ticker monitoring loop
+- [x] Morning market scanner (7:45 AM, ~6,000 stocks)
+- [x] 24/7 news watcher — discovers unknown stocks from news events
+- [x] StockTwits sentiment (replaces Reddit)
+- [x] 4-layer scoring: context + setup + execution − risk penalty
+- [x] 4 named setup patterns with individual hard filters and scoring
+- [x] Best-match setup detection (all qualifying setups scored, highest wins)
+- [x] Relative strength vs SPY + QQQ (1d / 5d / 20d weighted composite)
+- [x] News classification into 10 catalyst categories (phrase-level)
+- [x] Self-learner — tracks 7 signal win rates across CSV history
+- [x] Forward return accuracy (actual historical close, not spot price)
+- [x] Dollar volume Gate 0 (eliminates illiquid stocks before scoring)
+- [x] Score breakdown in every WhatsApp alert
+- [x] Daily scheduler with 10 timed events
+
+### v3.0 — Planned 📋
+
+- [ ] Global rate limiter shared across all three discovery engines
 - [ ] SEC EDGAR insider trading signal (free)
-- [ ] Signal accuracy tracking (actual vs predicted)
-- [ ] Multi-ticker monitoring loop
-
-### v1.2 — Planned 📋
-
-- [ ] Pre-market news scanner (8:00 AM SMS summary)
-- [ ] Market scanner — top movers each morning
-- [ ] Multi-ticker watchlist on dashboard UI
-- [ ] Email report option (SendGrid)
-
-### v2.0 — Advanced 🚀
-
 - [ ] Options flow via Unusual Whales ($50/mo)
 - [ ] Dark pool prints via Unusual Whales ($50/mo)
-- [ ] Real-time news via Benzinga ($50/mo)
-- [ ] Upgrade to Polygon paid tier (WebSocket streaming)
-- [ ] Full LangGraph refactor with parallel node execution
-- [ ] Self-improving prompts based on signal accuracy history
+- [ ] Sector ETF RS (third benchmark in composite)
+- [ ] Parallel node execution in LangGraph pipeline
+- [ ] Browser-based watchlist editor in dashboard
+- [ ] Email digest option (SendGrid)
 
 ---
 
-## 11. Important Disclaimers
+## 14. Important Disclaimers
 
 > ⚠️ **This software is for educational and research purposes only.**
 
 - **Not financial advice.** Nothing in this project constitutes investment advice, a recommendation to buy or sell any security, or a solicitation of any kind.
-- **Paper trade first.** Always run in `--paper` mode for a minimum of 30 days before considering any live use. Understand the signal accuracy on your specific tickers before trusting any output.
+- **Paper trade first.** Always run in `--paper` mode for a minimum of 30 days before considering any live use.
 - **Past performance does not guarantee future results.** A high backtest win rate on historical data does not mean the strategy will perform the same going forward.
 - **Never risk money you cannot afford to lose.** Algorithmic trading systems can and do produce losing trades, streaks of losses, and complete failures in certain market conditions.
 - **The AI makes mistakes.** Claude is a language model, not a licensed financial analyst. Its reasoning can be incorrect, incomplete, or confidently wrong.
@@ -364,7 +509,7 @@ HOLD signals are **never** sent — alerts only fire when confidence ≥ 65.
 
 ---
 
-## 12. Author
+## 15. Author
 
 **Dan Nicolau**
 Senior QA Engineer → AI QA Architect

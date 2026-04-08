@@ -37,15 +37,37 @@ class AgentState(TypedDict):
     sentiment_score: float
     news_summary:    str
 
+    # Data node extras
+    sector:            str
+    premarket_price:   float
+    earnings_info:     dict
+    intraday_bars:     list
+
     # Tech node
     rsi:               float
+    intraday_rsi:      float
     macd:              dict
     bollinger:         dict
     atr:               float
     support:           float
     resistance:        float
+    sr_levels:         dict
     volume_spike:      bool
     volume_spike_ratio: float
+    vwap:              float
+    obv:               float
+    smart_money:       str
+    ema_stack:         dict
+    float_rotation:    float
+    sector_momentum:   dict
+    timing:            dict
+    gap_info:          dict
+    market_regime:     dict
+    relative_strength: dict
+    score_breakdown:   dict
+
+    # News node extras
+    social_velocity:   dict
 
     # Decision node
     signal:       str
@@ -54,6 +76,8 @@ class AgentState(TypedDict):
     targets:      list
     stop_loss:    float
     reasoning:    str
+    action_plan:  str
+    rr_ratio:     float
     should_alert: bool
 
     # Alert node
@@ -107,14 +131,34 @@ def make_initial_state(ticker: str, paper_trading: bool = False) -> AgentState:
         atr=0.0,
         support=0.0,
         resistance=0.0,
+        sector="Technology",
+        premarket_price=0.0,
+        earnings_info={"days_to_earnings": 999, "earnings_risk": "none", "earnings_date": ""},
+        intraday_bars=[],
         volume_spike=False,
         volume_spike_ratio=1.0,
+        vwap=0.0,
+        obv=0.0,
+        intraday_rsi=50.0,
+        sr_levels={},
+        smart_money="NEUTRAL",
+        ema_stack={"alignment": "MIXED", "ema9": 0.0, "ema21": 0.0, "ema50": 0.0},
+        float_rotation=0.0,
+        sector_momentum={"etf": "SPY", "change_pct": 0.0, "signal": "NEUTRAL"},
+        timing={"multiplier": 1.0, "window": "unknown"},
+        gap_info={"gap_pct": 0.0, "signal": "NEUTRAL", "label": ""},
+        market_regime={"regime": "UNKNOWN", "spy_price": 0.0, "spy_day_chg": 0.0},
+        relative_strength={"rs_vs_spy": 0.0, "label": "n/a", "spy_chg": 0.0},
+        score_breakdown={"raw_score": 0, "final_score": 0, "timing_mult": 1.0, "fired": [], "missed": []},
+        social_velocity={"velocity": 1.0, "label": "no data"},
         signal="HOLD",
         confidence=0.0,
         entry_zone="",
         targets=[],
         stop_loss=0.0,
         reasoning="",
+        action_plan="",
+        rr_ratio=0.0,
         should_alert=False,
         alert_sent=False,
     )

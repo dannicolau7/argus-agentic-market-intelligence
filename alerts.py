@@ -44,8 +44,12 @@ def send_push(title: str, message: str):
 def send_alert(ticker: str, signal: str, price: float,
                entry_low: float, entry_high: float,
                target: float, stop: float,
-               reason: str, confidence: int):
-
+               reason: str, confidence: int) -> bool:
+    """
+    Send a trade alert via WhatsApp (always) and Pushover (if configured).
+    Returns True if WhatsApp delivery succeeded, False otherwise.
+    Pushover failure does not affect the return value.
+    """
     emoji = 'BUY' if signal == 'BUY' else 'SELL' if signal == 'SELL' else 'HOLD'
 
     message = (
@@ -57,10 +61,12 @@ def send_alert(ticker: str, signal: str, price: float,
         f'Confidence: {confidence}%'
     )
 
-    send_whatsapp(message)
+    whatsapp_ok = send_whatsapp(message)
 
     if PUSHOVER_APP_TOKEN and PUSHOVER_APP_TOKEN != 'your_key_here':
         send_push(f'Stock AI Agent - {signal} {ticker}', message)
+
+    return bool(whatsapp_ok)
 
 if __name__ == '__main__':
     send_alert(

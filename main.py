@@ -21,6 +21,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime
+import math
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI
@@ -260,9 +261,9 @@ async def _send_daily_report():
 
     if not PAPER:
         try:
-            from alerts import send_push, send_sms
+            from alerts import send_push, send_whatsapp
             send_push(f"Daily Report — {TICKER}", report)
-            send_sms(report)
+            send_whatsapp(report)
         except Exception as e:
             print(f"❌ [Monitor] Daily report delivery failed: {e}")
 
@@ -307,16 +308,32 @@ async def monitoring_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from scheduler import scheduler_loop
+    from news_watcher import news_watcher_loop
     task_monitor   = asyncio.create_task(monitoring_loop())
     task_scheduler = asyncio.create_task(
         scheduler_loop(paper=PAPER, daily_log=daily_log, signal_memory=signal_memory)
     )
+    task_watcher   = asyncio.create_task(news_watcher_loop(paper=PAPER))
     yield
     task_monitor.cancel()
     task_scheduler.cancel()
+    task_watcher.cancel()
 
 
 app = FastAPI(title=f"Stock AI Agent — {TICKER}", lifespan=lifespan)
+
+
+def _json_safe(value):
+    """Recursively replace NaN/Inf values so FastAPI JSON responses stay valid."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, tuple):
+        return [_json_safe(v) for v in value]
+    return value
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -333,14 +350,14 @@ async def api_state(ticker: str = None):
     t = (ticker or TICKER).upper()
     state   = latest_states.get(t, latest_state if t == TICKER else {})
     history = signal_histories.get(t, signal_history if t == TICKER else [])
-    return JSONResponse({
+    return JSONResponse(_json_safe({
         "state":        state,
         "history":      history,
         "paper_trading": PAPER,
         "ticker":       t,
         "tickers":      TICKERS,
         "market_open":  is_market_open(),
-    })
+    }))
 
 
 @app.get("/api/bars")
@@ -358,7 +375,7 @@ async def api_bars(ticker: str = None):
         }
         for b in bars
     ]
-    return JSONResponse({"bars": tv_bars, "ticker": t})
+    return JSONResponse(_json_safe({"bars": tv_bars, "ticker": t}))
 
 
 @app.get("/api/news")
@@ -372,7 +389,7 @@ async def api_news():
         }
         for n in latest_news[:10]
     ]
-    return JSONResponse({"news": news, "ticker": TICKER})
+    return JSONResponse(_json_safe({"news": news, "ticker": TICKER}))
 
 
 @app.get("/api/watchlist")
@@ -387,7 +404,7 @@ async def api_watchlist():
             "price":      s.get("current_price", 0),
             "rsi":        s.get("rsi", 0),
         })
-    return JSONResponse({"watchlist": rows, "memory": signal_memory})
+    return JSONResponse(_json_safe({"watchlist": rows, "memory": signal_memory}))
 
 
 @app.post("/api/run")
@@ -404,13 +421,13 @@ async def api_trigger_run():
 @app.get("/api/log")
 async def api_log():
     """Return last 100 rows of signals_log.csv for the dashboard."""
-    return JSONResponse({"log": logger.read_log(limit=100)})
+    return JSONResponse(_json_safe({"log": logger.read_log(limit=100)}))
 
 
 @app.get("/api/watchlist/saved")
 async def api_watchlist_saved():
     """Return the persisted watchlist.json tickers."""
-    return JSONResponse({"tickers": wl.load()})
+    return JSONResponse(_json_safe({"tickers": wl.load()}))
 
 
 @app.post("/api/watchlist/add/{ticker}")
