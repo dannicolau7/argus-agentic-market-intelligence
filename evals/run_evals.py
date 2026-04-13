@@ -195,7 +195,7 @@ def _build_context(inputs: dict) -> dict:
         "sentiment_score": 70 if inputs.get("news_category") in
                            ("earnings_beat", "fda_approval", "contract_win") else 50,
         "news_summary":   inputs.get("news_headline", ""),
-        "social_velocity": {"label": f"RVOL {rvol:.1f}x", "multiplier": rvol},
+        "social_velocity": {"label": f"RVOL {rvol:.1f}x", "velocity": rvol},
     }
 
 

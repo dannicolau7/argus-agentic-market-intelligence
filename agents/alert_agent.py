@@ -44,7 +44,6 @@ def alert_node(state: dict) -> dict:
             entry_low = entry_high = price
 
         targets   = state.get("targets", [])
-        target    = targets[0] if targets else price
         stop_loss = state.get("stop_loss", 0.0)
         reasoning = state.get("reasoning", "")[:200]
 
@@ -54,7 +53,7 @@ def alert_node(state: dict) -> dict:
             price=price,
             entry_low=entry_low,
             entry_high=entry_high,
-            target=target,
+            targets=targets,
             stop=stop_loss,
             reason=reasoning,
             confidence=int(confidence),

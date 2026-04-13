@@ -28,6 +28,7 @@ import json
 import os
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import anthropic
 import numpy as np
@@ -253,10 +254,69 @@ def _gap_pct(opens: np.ndarray, closes: np.ndarray) -> float:
     return (float(opens[-1]) - float(closes[-2])) / float(closes[-2]) * 100
 
 
+def _intraday_day_fraction() -> float:
+    """
+    Fraction of the regular trading session (9:30–16:00 ET) that has elapsed.
+    Returns 1.0 outside market hours so complete bars are never rescaled.
+    """
+    now     = datetime.now(tz=ZoneInfo("America/New_York"))
+    open_t  = now.replace(hour=9,  minute=30, second=0, microsecond=0)
+    close_t = now.replace(hour=16, minute=0,  second=0, microsecond=0)
+    if now < open_t or now >= close_t:
+        return 1.0
+    elapsed = (now - open_t).total_seconds()
+    total   = (close_t - open_t).total_seconds()   # 23 400 s
+    return max(0.05, elapsed / total)
+
+
 def _rvol(volumes: np.ndarray) -> float:
-    """Relative volume: last bar / 20-bar average."""
-    avg = float(np.mean(volumes[-20:])) if len(volumes) >= 20 else float(np.mean(volumes))
-    return float(volumes[-1]) / avg if avg > 0 else 1.0
+    """
+    Pace-adjusted relative volume.
+
+    Baseline: mean of the previous 20 *full* trading days (volumes[-21:-1]),
+    so today's partial bar is never mixed into the denominator.
+
+    Today's volume is pace-projected to end-of-day before comparison,
+    preventing artificially low RVOL readings at 9:45 AM.
+    """
+    if len(volumes) < 2:
+        return 1.0
+    hist = volumes[-21:-1] if len(volumes) >= 21 else volumes[:-1]
+    avg  = float(np.mean(hist)) if len(hist) > 0 else 1.0
+    if avg <= 0:
+        return 1.0
+    projected = float(volumes[-1]) / _intraday_day_fraction()
+    return round(projected / avg, 2)
+
+
+def _overextension_pct(closes: np.ndarray, period: int = 20) -> float:
+    """
+    % deviation of current price above EMA{period}.
+    Positive = overextended above MA; negative = below.
+    """
+    if len(closes) < period:
+        return 0.0
+    ema_val = float(_ema(closes, period)[-1])
+    if ema_val <= 0:
+        return 0.0
+    return round((float(closes[-1]) - ema_val) / ema_val * 100, 1)
+
+
+def _spread_proxy(highs: np.ndarray, lows: np.ndarray,
+                  closes: np.ndarray, n: int = 5) -> float:
+    """
+    Estimated bid-ask spread proxy: mean (High−Low)/Close over last n bars.
+    Expressed as a percentage. Higher = wider spread / more illiquid.
+    """
+    n = min(n, len(highs), len(lows), len(closes))
+    if n < 1:
+        return 0.0
+    ranges = []
+    for i in range(1, n + 1):
+        c = float(closes[-i])
+        if c > 0:
+            ranges.append((float(highs[-i]) - float(lows[-i])) / c * 100)
+    return round(sum(ranges) / len(ranges), 2) if ranges else 0.0
 
 
 # ── Gate helpers ───────────────────────────────────────────────────────────────
@@ -409,6 +469,17 @@ def _score_survivor(data: dict, news: dict,
     if price < 10:
         ctx += 8;  ctx_signals.append(f"${price:.2f}")
 
+    # Sector tailwind / headwind — did the sector ETF move today?
+    if sector_closes is not None and len(sector_closes) >= 2:
+        sec_prev = float(sector_closes[-2])
+        sec_last = float(sector_closes[-1])
+        if sec_prev > 0:
+            sec_1d = (sec_last / sec_prev - 1) * 100
+            if sec_1d >= 2.0:
+                ctx += 12; ctx_signals.append(f"sector +{sec_1d:.1f}% 🚀")
+            elif sec_1d >= 1.0:
+                ctx += 8;  ctx_signals.append(f"sector +{sec_1d:.1f}%")
+
     context_score = ctx
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -452,6 +523,31 @@ def _score_survivor(data: dict, news: dict,
     # RSI overbought (outside our gate range but just in case)
     if rsi > 70:
         risk += 20; risk_signals.append(f"RSI {rsi:.0f} overbought ⚠️")
+
+    # Sector headwind — sector ETF falling while stock is moving up
+    if sector_closes is not None and len(sector_closes) >= 2:
+        sec_prev = float(sector_closes[-2])
+        sec_last = float(sector_closes[-1])
+        if sec_prev > 0:
+            sec_1d = (sec_last / sec_prev - 1) * 100
+            if sec_1d <= -2.0:
+                risk += 15; risk_signals.append(f"sector {sec_1d:.1f}% ⚠️")
+            elif sec_1d <= -1.5:
+                risk += 8;  risk_signals.append(f"sector {sec_1d:.1f}%")
+
+    # Overextension — price too far above EMA20 (mean-reversion risk)
+    overext = _overextension_pct(closes, 20)
+    if overext > 30:
+        risk += 20; risk_signals.append(f"EMA20 overext +{overext:.0f}% ⚠️")
+    elif overext > 20:
+        risk += 10; risk_signals.append(f"EMA20 overext +{overext:.0f}%")
+
+    # Spread / execution cost proxy — wide daily range on low dollar volume
+    spread = _spread_proxy(data["highs"], lows, closes)
+    if spread > 5.0 and dollar_vol < 1_000_000:
+        risk += 20; risk_signals.append(f"wide spread ~{spread:.1f}% ⚠️")
+    elif spread > 3.5 and dollar_vol < 500_000:
+        risk += 10; risk_signals.append(f"spread ~{spread:.1f}%")
 
     risk_penalty = risk
 

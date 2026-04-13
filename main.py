@@ -20,6 +20,7 @@ import argparse
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from datetime import datetime
 import math
 from zoneinfo import ZoneInfo
@@ -49,36 +50,48 @@ def _parse_args():
     args, _ = p.parse_known_args()
     return args
 
-_args    = _parse_args()
-
-# ── Handle watchlist management commands immediately (no server needed) ────────
-if _args.add:
-    wl.add(_args.add)
-    raise SystemExit(0)
-if _args.remove:
-    wl.remove(_args.remove)
-    raise SystemExit(0)
-if _args.list:
-    wl.list_tickers()
-    raise SystemExit(0)
-
-# Resolve tickers: CLI flag → .env → watchlist → default
-_watchlist = wl.load()
-_cli_tickers = _args.ticker  # list or None
-if _cli_tickers:
-    TICKERS = [t.upper() for t in _cli_tickers]
-elif _watchlist:
-    TICKERS = _watchlist
-elif config.TICKER:
-    TICKERS = [t.strip().upper() for t in config.TICKER.split() if t.strip()]
-else:
-    TICKERS = ["BZAI"]
-
-TICKER   = TICKERS[0]   # primary ticker (for display / single-ticker APIs)
-INTERVAL = _args.interval
-PAPER    = _args.paper
-PORT     = _args.port
+# ── Safe module-level defaults (populated by _setup_from_args at startup) ──────
+TICKERS  = ["BZAI"]
+TICKER   = "BZAI"
+INTERVAL = 300
+PAPER    = False
+PORT     = 8000
 EST      = ZoneInfo("America/New_York")
+
+
+def _setup_from_args() -> None:
+    """Parse CLI args and populate module-level config. Called only from __main__."""
+    global TICKERS, TICKER, INTERVAL, PAPER, PORT
+
+    args = _parse_args()
+
+    # Handle watchlist management commands immediately (no server needed)
+    if args.add:
+        wl.add(args.add)
+        raise SystemExit(0)
+    if args.remove:
+        wl.remove(args.remove)
+        raise SystemExit(0)
+    if args.list:
+        wl.list_tickers()
+        raise SystemExit(0)
+
+    # Resolve tickers: CLI flag → .env → watchlist → default
+    watchlist   = wl.load()
+    cli_tickers = args.ticker
+    if cli_tickers:
+        TICKERS = [t.upper() for t in cli_tickers]
+    elif watchlist:
+        TICKERS = watchlist
+    elif config.TICKER:
+        TICKERS = [t.strip().upper() for t in config.TICKER.split() if t.strip()]
+    else:
+        TICKERS = ["BZAI"]
+
+    TICKER   = TICKERS[0]
+    INTERVAL = args.interval
+    PAPER    = args.paper
+    PORT     = args.port
 
 
 # ── Market hours helpers ───────────────────────────────────────────────────────
@@ -102,27 +115,25 @@ def is_report_window() -> bool:
     return 0 <= delta < INTERVAL
 
 
-# ── Shared in-memory state ─────────────────────────────────────────────────────
+# ── Runtime state ──────────────────────────────────────────────────────────────
 
-latest_states:    dict  = {}     # {ticker: state_dict}
-signal_histories: dict  = {}     # {ticker: [last 200]}
-latest_bars_map:  dict  = {}     # {ticker: bars_list}
-latest_news_map:  dict  = {}     # {ticker: news_list}
+@dataclass
+class AppState:
+    """
+    All mutable runtime state in one place.
+    Swap with AppState() in tests for full isolation — no module-level patching needed.
+    """
+    ticker_states:    dict = field(default_factory=dict)   # {ticker: state_dict}
+    histories:        dict = field(default_factory=dict)   # {ticker: [last 200]}
+    bars_map:         dict = field(default_factory=dict)   # {ticker: bars_list}
+    news_map:         dict = field(default_factory=dict)   # {ticker: news_list}
+    signal_memory:    dict = field(default_factory=dict)   # {ticker: {signal, price, ...}}
+    daily_log:        list = field(default_factory=list)   # BUY/SELL events today
+    report_sent_date: str  = ""                            # "YYYY-MM-DD"
 
-# convenience aliases pointing at primary ticker (kept for backward compat)
-latest_state:     dict  = {}
-signal_history:   list  = []
-latest_bars:      list  = []
-latest_news:      list  = []
 
-# {ticker: {"signal", "price", "stop_loss", "targets", "timestamp"}}
-signal_memory:    dict  = {}
-
-# Signals fired today (reset each day)
-daily_log:        list  = []
-report_sent_date: str   = ""      # "YYYY-MM-DD" of last report
-
-_executor = ThreadPoolExecutor(max_workers=1)
+_app_state = AppState()
+_executor  = ThreadPoolExecutor(max_workers=1)
 
 
 # ── Graph execution ────────────────────────────────────────────────────────────
@@ -132,8 +143,6 @@ def _run_sync(ticker: str, paper: bool) -> dict:
 
 
 def _store_result(result: dict):
-    global latest_state, signal_history, latest_bars, latest_news
-
     ticker = result.get("ticker", TICKER)
 
     bars  = result.get("bars", [])
@@ -141,11 +150,11 @@ def _store_result(result: dict):
     state = {k: v for k, v in result.items() if k not in ("bars", "snapshot", "raw_news")}
     state["timestamp"] = datetime.now().isoformat()
 
-    latest_bars_map[ticker]  = bars
-    latest_news_map[ticker]  = news
-    latest_states[ticker]    = state
+    _app_state.bars_map[ticker]       = bars
+    _app_state.news_map[ticker]       = news
+    _app_state.ticker_states[ticker]  = state
 
-    hist = signal_histories.setdefault(ticker, [])
+    hist = _app_state.histories.setdefault(ticker, [])
     hist.append({
         "timestamp":  state["timestamp"],
         "price":      state.get("current_price", 0),
@@ -156,14 +165,6 @@ def _store_result(result: dict):
     if len(hist) > 200:
         hist.pop(0)
 
-    # keep primary-ticker aliases up-to-date
-    if ticker == TICKER:
-        latest_state.clear()
-        latest_state.update(state)
-        latest_bars[:]  = bars
-        latest_news[:]  = news
-        signal_history[:]  = hist
-
 
 def _update_signal_memory(result: dict):
     ticker  = result.get("ticker", TICKER)
@@ -171,14 +172,14 @@ def _update_signal_memory(result: dict):
     price   = result.get("current_price", 0.0)
 
     if signal in ("BUY", "SELL"):
-        signal_memory[ticker] = {
+        _app_state.signal_memory[ticker] = {
             "signal":    signal,
             "price":     price,
             "stop_loss": result.get("stop_loss", 0.0),
             "targets":   result.get("targets", []),
             "timestamp": datetime.now().isoformat(),
         }
-        daily_log.append({
+        _app_state.daily_log.append({
             "signal":     signal,
             "ticker":     ticker,
             "price":      price,
@@ -190,11 +191,13 @@ def _update_signal_memory(result: dict):
 
 
 def _check_exits(ticker: str, price: float) -> str | None:
-    mem = signal_memory.get(ticker)
+    mem = _app_state.signal_memory.get(ticker)
     if not mem or mem.get("signal") != "BUY":
         return None
-    stop    = mem.get("stop_loss", 0.0)
-    targets = [t for t in mem.get("targets", []) if t > 0]
+    stop        = mem.get("stop_loss", 0.0)
+    entry_price = mem.get("price", 0.0)
+    # Only count targets that are genuinely above the entry price
+    targets = [t for t in mem.get("targets", []) if t > entry_price]
     if stop and price <= stop:
         return "STOP_LOSS"
     if targets and price >= min(targets):
@@ -225,7 +228,7 @@ async def run_once(ticker: str = None):
                 send_whatsapp(msg)
             except Exception as e:
                 print(f"❌ [Monitor] Exit alert failed: {e}")
-        signal_memory.pop(ticker, None)
+        _app_state.signal_memory.pop(ticker, None)
 
     sig  = result.get("signal", "HOLD")
     conf = result.get("confidence", 0)
@@ -241,7 +244,7 @@ async def run_once(ticker: str = None):
 
 async def _send_daily_report():
     today    = datetime.now(tz=EST).strftime("%Y-%m-%d")
-    today_signals = [e for e in daily_log if e["timestamp"][:10] == today]
+    today_signals = [e for e in _app_state.daily_log if e["timestamp"][:10] == today]
 
     lines = [f"📅 Daily Report — {TICKER} — {today}"]
     if not today_signals:
@@ -271,7 +274,6 @@ async def _send_daily_report():
 # ── Monitoring loop ────────────────────────────────────────────────────────────
 
 async def monitoring_loop():
-    global report_sent_date
     mode = "📋 PAPER" if PAPER else "🔴 LIVE"
     print(f"🚀 Stock AI Agent starting  [{mode}]  tickers={', '.join(TICKERS)}  interval={INTERVAL}s")
     print(f"📊 Dashboard → http://localhost:{PORT}")
@@ -311,7 +313,8 @@ async def lifespan(app: FastAPI):
     from news_watcher import news_watcher_loop
     task_monitor   = asyncio.create_task(monitoring_loop())
     task_scheduler = asyncio.create_task(
-        scheduler_loop(paper=PAPER, daily_log=daily_log, signal_memory=signal_memory)
+        scheduler_loop(paper=PAPER, daily_log=_app_state.daily_log,
+                        signal_memory=_app_state.signal_memory)
     )
     task_watcher   = asyncio.create_task(news_watcher_loop(paper=PAPER))
     yield
@@ -348,22 +351,22 @@ async def serve_dashboard():
 @app.get("/api/state")
 async def api_state(ticker: str = None):
     t = (ticker or TICKER).upper()
-    state   = latest_states.get(t, latest_state if t == TICKER else {})
-    history = signal_histories.get(t, signal_history if t == TICKER else [])
+    state   = _app_state.ticker_states.get(t, {})
+    history = _app_state.histories.get(t, [])
     return JSONResponse(_json_safe({
-        "state":        state,
-        "history":      history,
+        "state":         state,
+        "history":       history,
         "paper_trading": PAPER,
-        "ticker":       t,
-        "tickers":      TICKERS,
-        "market_open":  is_market_open(),
+        "ticker":        t,
+        "tickers":       TICKERS,
+        "market_open":   is_market_open(),
     }))
 
 
 @app.get("/api/bars")
 async def api_bars(ticker: str = None):
     t    = (ticker or TICKER).upper()
-    bars = latest_bars_map.get(t, latest_bars if t == TICKER else [])
+    bars = _app_state.bars_map.get(t, [])
     tv_bars = [
         {
             "time":   b.get("t", 0) // 1000,
@@ -380,6 +383,7 @@ async def api_bars(ticker: str = None):
 
 @app.get("/api/news")
 async def api_news():
+    raw  = _app_state.news_map.get(TICKER, [])
     news = [
         {
             "title":     n.get("title", ""),
@@ -387,7 +391,7 @@ async def api_news():
             "published": (n.get("published_utc") or "")[:10],
             "source":    (n.get("publisher") or {}).get("name", ""),
         }
-        for n in latest_news[:10]
+        for n in raw[:10]
     ]
     return JSONResponse(_json_safe({"news": news, "ticker": TICKER}))
 
@@ -396,7 +400,7 @@ async def api_news():
 async def api_watchlist():
     rows = []
     for t in TICKERS:
-        s = latest_states.get(t, latest_state if t == TICKER else {})
+        s = _app_state.ticker_states.get(t, {})
         rows.append({
             "ticker":     t,
             "signal":     s.get("signal", "—"),
@@ -404,7 +408,7 @@ async def api_watchlist():
             "price":      s.get("current_price", 0),
             "rsi":        s.get("rsi", 0),
         })
-    return JSONResponse(_json_safe({"watchlist": rows, "memory": signal_memory}))
+    return JSONResponse(_json_safe({"watchlist": rows, "memory": _app_state.signal_memory}))
 
 
 @app.post("/api/run")
@@ -443,4 +447,5 @@ async def api_watchlist_remove(ticker: str):
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=False)
+    _setup_from_args()
+    uvicorn.run(app, host="0.0.0.0", port=PORT, reload=False)

@@ -4,6 +4,7 @@ OBV, Smart Money Divergence, Float Rotation, EMA Stack (9/21/50),
 Sector Momentum, Catalyst Timing, Pre-Market Gap Intelligence.
 """
 
+import math
 import numpy as np
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
@@ -33,6 +34,21 @@ SECTOR_ETFS = {
 
 # ── Indicator helpers ──────────────────────────────────────────────────────────
 
+def _sanitize(arr: np.ndarray, fill: float = 0.0) -> np.ndarray:
+    """
+    Forward-fill NaN / Inf values in a price or volume array.
+
+    Uses the preceding finite value so indicator calculations see a smooth
+    series rather than zeros (which would distort RSI / MACD / OBV).
+    Falls back to `fill` only at position 0 when there is no prior value.
+    """
+    result = arr.copy()
+    for i in range(len(result)):
+        if not np.isfinite(result[i]):
+            result[i] = result[i - 1] if i > 0 and np.isfinite(result[i - 1]) else fill
+    return result
+
+
 def _ema(arr: np.ndarray, period: int) -> np.ndarray:
     k      = 2 / (period + 1)
     result = [float(arr[0])]
@@ -49,9 +65,13 @@ def _calc_rsi(closes: np.ndarray, period: int = 14) -> float:
     losses   = np.where(deltas < 0, -deltas, 0.0)
     avg_gain = float(np.mean(gains[:period]))
     avg_loss = float(np.mean(losses[:period]))
+    if not np.isfinite(avg_gain) or not np.isfinite(avg_loss):
+        return 50.0
     for i in range(period, len(gains)):
         avg_gain = (avg_gain * (period - 1) + gains[i]) / period
         avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+    if avg_gain == 0 and avg_loss == 0:
+        return 50.0   # no price movement — RSI undefined, use neutral
     if avg_loss == 0:
         return 100.0
     rs = avg_gain / avg_loss
@@ -88,14 +108,13 @@ def _calc_bollinger(closes: np.ndarray, period: int = 20, num_std: float = 2.0) 
 def _calc_atr(bars: list, period: int = 14) -> float:
     if len(bars) < 2:
         return 0.0
-    trs = [
-        max(
-            bars[i]["h"] - bars[i]["l"],
-            abs(bars[i]["h"] - bars[i - 1]["c"]),
-            abs(bars[i]["l"] - bars[i - 1]["c"]),
-        )
-        for i in range(1, len(bars))
-    ]
+    trs = []
+    for i in range(1, len(bars)):
+        h  = float(bars[i]["h"])
+        l  = float(bars[i]["l"])
+        pc = float(bars[i - 1]["c"])
+        if math.isfinite(h) and math.isfinite(l) and math.isfinite(pc):
+            trs.append(max(h - l, abs(h - pc), abs(l - pc)))
     recent = trs[-period:]
     return round(sum(recent) / len(recent), 6) if recent else 0.0
 
@@ -107,9 +126,12 @@ def _calc_vwap(intraday_bars: list) -> float:
     try:
         cum_pv = cum_v = 0.0
         for b in intraday_bars:
-            typical = (float(b["h"]) + float(b["l"]) + float(b["c"])) / 3
-            vol     = float(b["v"])
-            cum_pv += typical * vol
+            h, l, c = float(b["h"]), float(b["l"]), float(b["c"])
+            vol = float(b["v"])
+            if not (math.isfinite(h) and math.isfinite(l) and
+                    math.isfinite(c) and math.isfinite(vol)):
+                continue
+            cum_pv += (h + l + c) / 3 * vol
             cum_v  += vol
         return round(cum_pv / cum_v, 6) if cum_v > 0 else 0.0
     except Exception:
@@ -250,7 +272,7 @@ def _premarket_gap(bars: list, premarket_price: float = 0.0) -> dict:
     if not bars or premarket_price <= 0:
         return {"gap_pct": 0.0, "signal": "NEUTRAL", "label": "no pre-market data"}
     prior_close = float(bars[-1]["c"])
-    if prior_close <= 0:
+    if prior_close <= 0 or not math.isfinite(prior_close):
         return {"gap_pct": 0.0, "signal": "NEUTRAL", "label": "no prior close"}
     gap_pct = ((premarket_price - prior_close) / prior_close) * 100
     if gap_pct > 10:
@@ -278,8 +300,12 @@ def _multi_level_sr(bars: list) -> dict:
     for days, label in [(5, "5d"), (10, "10d"), (20, "20d")]:
         recent = bars[-min(days, len(bars)):]
         if recent:
-            result[f"support_{label}"]    = round(min(b["l"] for b in recent), 4)
-            result[f"resistance_{label}"] = round(max(b["h"] for b in recent), 4)
+            highs = [float(b["h"]) for b in recent if math.isfinite(float(b["h"]))]
+            lows  = [float(b["l"]) for b in recent if math.isfinite(float(b["l"]))]
+            if highs:
+                result[f"resistance_{label}"] = round(max(highs), 4)
+            if lows:
+                result[f"support_{label}"] = round(min(lows), 4)
     # Primary levels = tightest (5-day)
     result["support"]    = result.get("support_5d",    result.get("support_10d",    0.0))
     result["resistance"] = result.get("resistance_5d", result.get("resistance_10d", 0.0))
@@ -340,7 +366,7 @@ def _intraday_rsi(intraday_bars: list) -> float:
     """RSI(14) calculated from 15-min intraday bars — more responsive than daily."""
     if len(intraday_bars) < 5:
         return 50.0
-    closes = np.array([float(b["c"]) for b in intraday_bars], dtype=float)
+    closes = _sanitize(np.array([float(b["c"]) for b in intraday_bars], dtype=float))
     return _calc_rsi(closes, period=min(14, len(closes) - 1))
 
 
@@ -447,8 +473,8 @@ def tech_node(state: dict) -> dict:
         if len(bars) < 5:
             raise ValueError(f"Not enough bars: {len(bars)}")
 
-        closes  = np.array([float(b["c"]) for b in bars], dtype=float)
-        volumes = np.array([float(b.get("v", 0)) for b in bars], dtype=float)
+        closes  = _sanitize(np.array([float(b["c"]) for b in bars], dtype=float))
+        volumes = _sanitize(np.array([float(b.get("v", 0)) for b in bars], dtype=float))
 
         # ── Core indicators ───────────────────────────────────────────────────
         rsi        = _calc_rsi(closes)

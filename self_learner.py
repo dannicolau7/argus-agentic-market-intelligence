@@ -32,6 +32,13 @@ DEFAULT_WEIGHTS = {
     "ema_stack":      1.0,   # logged as ema_cross (0/1)
     "gap":            1.0,   # logged as gap_pct > 2%
     "bullish_news":   1.0,   # logged as news_category in BULLISH_CATEGORIES
+    # Additional signals tracked by _compute_score_breakdown
+    "bollinger":      1.0,
+    "float_rot":      1.0,
+    "sentiment":      1.0,
+    "smart_money":    1.0,
+    "support":        1.0,
+    "vwap":           1.0,
 }
 
 MIN_SAMPLES = 5   # need at least 5 picks to trust a win rate
