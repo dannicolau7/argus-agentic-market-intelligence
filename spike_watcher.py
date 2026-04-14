@@ -1,18 +1,19 @@
 """
-spike_watcher.py — Real-time price + volume spike detection.
+spike_watcher.py — Real-time price + volume spike detection across all stocks.
 
-Runs every 60 seconds during market hours. Fetches the last few 1-minute
-intraday bars for every watchlist ticker in a single yfinance batch call
-(zero Polygon API usage). When a ticker spikes ≥ 2% on ≥ 2.5× average
-volume in the last bar, it:
+Runs every 60 seconds during market hours. On each cycle it checks:
+  - All watchlist tickers (always)
+  - The current 200-ticker chunk of the full ~6,000-stock universe (rotating)
+    → full universe covered every ~30 minutes
 
-  1. Sends a preliminary WhatsApp: "⚡ AWRE spiking +4.2% on 3.8× vol"
-  2. Immediately triggers the full LangGraph pipeline with news_triggered=True
-     (lowers confidence threshold to 55 so early valid signals aren't rejected)
+Uses a single yfinance batch download per cycle (zero Polygon API calls).
+When a ticker spikes ≥ 2% on ≥ 2.5× average volume:
 
-This catches moves *before* news is indexed by Polygon (30–50 min lag),
-reducing alert latency from 30–50 min to under 2 min.
+  1. Sends preliminary WhatsApp: "⚡ AWRE spiking +4.2% on 3.8× vol"
+  2. Triggers full LangGraph pipeline with news_triggered=True
+     (lowers confidence threshold from 65 → 55)
 
+Alert latency: 30–50 min → < 2 min.
 30-minute cooldown per ticker prevents re-triggering on the same move.
 """
 
@@ -26,12 +27,43 @@ import yfinance as yf
 from alerts import send_whatsapp
 
 EST              = ZoneInfo("America/New_York")
-SPIKE_INTERVAL   = 60       # seconds between checks
-PRICE_SPIKE_PCT  = 0.02     # 2% move in last 1-min bar triggers investigation
-VOL_SPIKE_RATIO  = 2.5      # volume must be ≥ 2.5× bar average
-SPIKE_COOLDOWN_S = 30 * 60  # 30-minute cooldown per ticker
+SPIKE_INTERVAL   = 60       # seconds between cycles
+PRICE_SPIKE_PCT  = 0.02     # 2% move in last 1-min bar
+VOL_SPIKE_RATIO  = 2.5      # volume ≥ 2.5× bar average
+SPIKE_COOLDOWN_S = 30 * 60  # 30-min cooldown per ticker
+CHUNK_SIZE       = 200      # tickers per cycle from the universe
 
-_spike_alerted: dict = {}   # {ticker: time.time()} of last spike trigger
+_spike_alerted:  dict = {}  # {ticker: time.time()} of last spike trigger
+_universe_cache: list = []  # loaded once at startup
+_chunk_idx:      int  = 0   # current position in universe rotation
+
+
+# ── Universe loader ────────────────────────────────────────────────────────────
+
+def _load_full_universe() -> list:
+    """Load the full ticker universe from market_scanner's cache."""
+    global _universe_cache
+    if _universe_cache:
+        return _universe_cache
+    try:
+        from market_scanner import _load_universe
+        _universe_cache = _load_universe()
+        print(f"⚡ [SpikeWatcher] Universe loaded: {len(_universe_cache):,} tickers")
+    except Exception as e:
+        print(f"⚡ [SpikeWatcher] Universe load failed: {e} — watchlist only")
+        _universe_cache = []
+    return _universe_cache
+
+
+def _get_chunk(universe: list) -> list:
+    """Return the next CHUNK_SIZE slice of the universe, rotating each call."""
+    global _chunk_idx
+    if not universe:
+        return []
+    start      = (_chunk_idx * CHUNK_SIZE) % len(universe)
+    chunk      = universe[start : start + CHUNK_SIZE]
+    _chunk_idx += 1
+    return chunk
 
 
 # ── Market hours ───────────────────────────────────────────────────────────────
@@ -60,8 +92,8 @@ def _mark_spike(ticker: str):
 
 def _fetch_spikes(tickers: list) -> list:
     """
-    Batch-download 1-minute bars for all tickers in one HTTP call.
-    Returns list of {ticker, price_chg_pct, vol_ratio, direction, price} dicts.
+    Single batch yfinance download for all tickers.
+    Returns list of {ticker, price_chg_pct, vol_ratio, direction, price}.
     """
     if not tickers:
         return []
@@ -91,11 +123,11 @@ def _fetch_spikes(tickers: list) -> list:
                 if len(t_df) < 3:
                     continue
 
-                avg_vol  = float(t_df["Volume"].mean())
-                last_bar = t_df.iloc[-1]
-                prev_bar = t_df.iloc[-2]
-
+                avg_vol    = float(t_df["Volume"].mean())
+                last_bar   = t_df.iloc[-1]
+                prev_bar   = t_df.iloc[-2]
                 prev_close = float(prev_bar["Close"])
+
                 if prev_close <= 0 or avg_vol <= 0:
                     continue
 
@@ -137,6 +169,13 @@ async def spike_watcher_loop(run_once_fn, paper: bool, get_tickers_fn):
 
     loop = asyncio.get_running_loop()
 
+    # Load universe once at startup (uses market_scanner's cache, fast if cache is fresh)
+    universe = await loop.run_in_executor(None, _load_full_universe)
+    total_chunks = max(1, len(universe) // CHUNK_SIZE)
+    if universe:
+        print(f"⚡ [SpikeWatcher] Full universe: {len(universe):,} tickers "
+              f"in {total_chunks} chunks — full cycle every ~{total_chunks}min")
+
     while True:
         try:
             await asyncio.sleep(SPIKE_INTERVAL)
@@ -144,11 +183,13 @@ async def spike_watcher_loop(run_once_fn, paper: bool, get_tickers_fn):
             if not _market_open():
                 continue
 
-            tickers = get_tickers_fn()
-            if not tickers:
-                continue
+            watchlist = get_tickers_fn()
+            chunk     = _get_chunk(universe)
 
-            spikes = await loop.run_in_executor(None, _fetch_spikes, tickers)
+            # Watchlist always checked; universe chunk rotates each cycle
+            to_check = list(dict.fromkeys(watchlist + chunk))
+
+            spikes = await loop.run_in_executor(None, _fetch_spikes, to_check)
 
             for s in spikes:
                 ticker    = s["ticker"]
@@ -199,9 +240,13 @@ async def spike_watcher_loop(run_once_fn, paper: bool, get_tickers_fn):
 if __name__ == "__main__":
     import watchlist_manager as wl
 
-    tickers = wl.load() or ["AWRE", "BZAI", "AAL"]
-    print(f"Checking {len(tickers)} tickers for spikes: {tickers}")
-    spikes = _fetch_spikes(tickers)
+    universe = _load_full_universe()
+    watchlist = wl.load() or ["AWRE", "BZAI", "AAL"]
+    chunk    = universe[:CHUNK_SIZE] if universe else watchlist
+    to_check = list(dict.fromkeys(watchlist + chunk))
+
+    print(f"Checking {len(to_check)} tickers (watchlist={len(watchlist)} + chunk={len(chunk)})...")
+    spikes = _fetch_spikes(to_check)
     if spikes:
         for s in spikes:
             print(f"  ⚡ {s['ticker']}: {s['price_chg_pct']:+.1f}%  vol={s['vol_ratio']:.1f}×  ${s['price']:.2f}")

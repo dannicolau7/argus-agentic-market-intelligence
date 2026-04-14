@@ -38,10 +38,42 @@ PRICE_MAX            = 50.0
 MIN_AVG_VOLUME       = 50_000       # ignore dead / illiquid stocks
 MAX_PER_POLL         = 2            # max full-pipeline runs per cycle (rate limit)
 
-_seen_ids:    set  = set()   # Polygon article IDs already processed
-_yf_seen_ids: set  = set()   # Yahoo Finance article UUIDs already processed
-_alerted_at:  dict = {}      # ticker → time.time() of last alert (shared across all sources)
+_seen_ids:      set  = set()   # Polygon article IDs already processed
+_yf_seen_ids:   set  = set()   # Yahoo Finance article UUIDs already processed
+_alerted_at:    dict = {}      # ticker → time.time() of last alert (shared across all sources)
 _executor = ThreadPoolExecutor(max_workers=2)
+
+# Universe rotation for YF news watcher (covers ~2,000 liquid stocks beyond watchlist)
+_yf_universe:   list = []
+_yf_chunk_idx:  int  = 0
+YF_CHUNK_SIZE   = 40   # extra universe tickers per 90s cycle
+
+
+def _get_yf_universe() -> list:
+    """Load top 2,000 liquid stocks from market_scanner's universe cache (lazy, once)."""
+    global _yf_universe
+    if _yf_universe:
+        return _yf_universe
+    try:
+        from market_scanner import _load_universe
+        _yf_universe = _load_universe(max_tickers=2000)
+        print(f"📰 [YF-News] Universe loaded: {len(_yf_universe):,} tickers")
+    except Exception as e:
+        print(f"📰 [YF-News] Universe load failed: {e} — watchlist only")
+        _yf_universe = []
+    return _yf_universe
+
+
+def _next_yf_chunk() -> list:
+    """Return the next YF_CHUNK_SIZE slice of the universe, rotating each call."""
+    global _yf_chunk_idx
+    universe = _get_yf_universe()
+    if not universe:
+        return []
+    start       = (_yf_chunk_idx * YF_CHUNK_SIZE) % len(universe)
+    chunk       = universe[start : start + YF_CHUNK_SIZE]
+    _yf_chunk_idx += 1
+    return chunk
 
 
 # ── News fetching ──────────────────────────────────────────────────────────────
@@ -206,16 +238,26 @@ async def _check_yf_ticker_news(ticker: str, paper: bool, loop) -> None:
 
 async def yf_news_watcher_loop(paper: bool = False):
     """
-    Polls Yahoo Finance news for every watchlist ticker every 90 seconds.
-    Much faster than Polygon (2–5 min lag vs 15–45 min).
-    Started as a separate asyncio task alongside news_watcher_loop.
+    Polls Yahoo Finance news every 90 seconds for:
+      - All watchlist tickers (always, every cycle)
+      - A rotating chunk of 40 tickers from the ~2,000-stock universe
+        → each universe stock checked every ~75 min (vs Polygon's 15–45 min lag)
+
+    Much faster than Polygon for breaking news (2–5 min lag vs 15–45 min).
+    Shares _alerted_at cooldown with Polygon and EDGAR watchers.
     """
     mode = "PAPER" if paper else "LIVE"
     print(f"📰 [YF-News] Started — poll every 90s | {mode}")
     loop = asyncio.get_running_loop()
 
-    # Seed: mark current articles as seen so startup doesn't flood old news
-    print("📰 [YF-News] Seeding Yahoo Finance article history...")
+    # Load universe lazily in background
+    await loop.run_in_executor(None, _get_yf_universe)
+    universe_size = len(_yf_universe)
+    cycle_mins    = max(1, universe_size // YF_CHUNK_SIZE) * 90 // 60
+    print(f"📰 [YF-News] Universe: {universe_size:,} stocks — full cycle every ~{cycle_mins} min")
+
+    # Seed: mark all current articles as seen so startup doesn't flood old news
+    print("📰 [YF-News] Seeding article history...")
     init_tickers = wl.load()
     for ticker in init_tickers:
         try:
@@ -228,14 +270,21 @@ async def yf_news_watcher_loop(paper: bool = False):
                     _yf_seen_ids.add(uid)
         except Exception:
             pass
-    print(f"📰 [YF-News] Seeded {len(_yf_seen_ids)} articles. Watching {len(init_tickers)} ticker(s).")
+    print(f"📰 [YF-News] Seeded {len(_yf_seen_ids)} articles. Ready.")
 
     while True:
         try:
             await asyncio.sleep(90)
-            tickers = wl.load()
+
+            watchlist = wl.load()
+            chunk     = _next_yf_chunk()
+
+            # Watchlist always first, universe chunk appended, deduped
+            tickers = list(dict.fromkeys(watchlist + chunk))
+
             for ticker in tickers:
                 await _check_yf_ticker_news(ticker, paper, loop)
+
         except asyncio.CancelledError:
             print("📰 [YF-News] Stopped.")
             break
