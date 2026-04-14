@@ -138,8 +138,10 @@ _executor  = ThreadPoolExecutor(max_workers=1)
 
 # ── Graph execution ────────────────────────────────────────────────────────────
 
-def _run_sync(ticker: str, paper: bool) -> dict:
-    return GRAPH.invoke(make_initial_state(ticker, paper_trading=paper))
+def _run_sync(ticker: str, paper: bool, already_alerted: bool = False) -> dict:
+    state = make_initial_state(ticker, paper_trading=paper)
+    state["already_alerted"] = already_alerted
+    return GRAPH.invoke(state)
 
 
 def _store_result(result: dict):
@@ -208,7 +210,11 @@ def _check_exits(ticker: str, price: float) -> str | None:
 async def run_once(ticker: str = None):
     ticker = ticker or TICKER
     loop   = asyncio.get_running_loop()
-    result = await loop.run_in_executor(_executor, _run_sync, ticker, PAPER)
+    # Suppress re-alerting if this ticker already has an active BUY position
+    already_alerted = ticker in _app_state.signal_memory
+    result = await loop.run_in_executor(
+        _executor, _run_sync, ticker, PAPER, already_alerted
+    )
 
     _store_result(result)
     _update_signal_memory(result)
@@ -428,6 +434,99 @@ async def api_log():
     return JSONResponse(_json_safe({"log": logger.read_log(limit=100)}))
 
 
+@app.get("/api/performance")
+async def api_performance():
+    """
+    Aggregate performance metrics from signals_log.csv + best_picks_log.csv.
+    Also includes live VIX / SPY circuit breaker status.
+    """
+    import csv as _csv
+    from datetime import date as _date
+
+    today_str = _date.today().isoformat()
+
+    # ── signals_log.csv ───────────────────────────────────────────────────────
+    signals       = logger.read_log(limit=10_000)
+    buy_signals   = [s for s in signals if s.get("signal") == "BUY"]
+    sell_signals  = [s for s in signals if s.get("signal") == "SELL"]
+    today_signals = [s for s in signals if s.get("timestamp", "").startswith(today_str)]
+
+    # ── best_picks_log.csv ────────────────────────────────────────────────────
+    picks: list = []
+    try:
+        import os as _os
+        if _os.path.exists("best_picks_log.csv"):
+            with open("best_picks_log.csv", newline="", encoding="utf-8") as f:
+                picks = list(_csv.DictReader(f))
+    except Exception:
+        picks = []
+
+    resolved = [
+        p for p in picks
+        if p.get("actual_gain_loss_pct") not in (None, "", "—")
+    ]
+
+    gains, losses = [], []
+    for p in resolved:
+        try:
+            pct = float(str(p["actual_gain_loss_pct"]).replace("%", "").replace("+", ""))
+            (gains if pct > 0 else losses).append(pct)
+        except ValueError:
+            pass
+
+    all_pcts   = gains + losses
+    win_rate   = round(len(gains) / len(resolved) * 100, 1) if resolved else None
+    avg_gain   = round(sum(gains)  / len(gains),  2) if gains  else None
+    avg_loss   = round(sum(losses) / len(losses), 2) if losses else None
+    total_pnl  = round(sum(all_pcts), 2)             if all_pcts else None
+
+    def _pick_summary(p: dict) -> dict:
+        try:
+            pct = float(str(p.get("actual_gain_loss_pct", "0")).replace("%", "").replace("+", ""))
+        except ValueError:
+            pct = 0.0
+        return {
+            "date":       p.get("date", ""),
+            "ticker":     p.get("ticker", ""),
+            "score":      p.get("total_score") or p.get("score", ""),
+            "price":      p.get("price_at_pick", ""),
+            "setup":      p.get("setup_type", ""),
+            "gain_pct":   pct,
+            "result":     "WIN" if pct > 0 else ("LOSS" if pct < 0 else "—"),
+        }
+
+    best_pick  = max(resolved, key=lambda p: float(str(p.get("actual_gain_loss_pct","0")).replace("%","").replace("+","")), default=None)
+    worst_pick = min(resolved, key=lambda p: float(str(p.get("actual_gain_loss_pct","0")).replace("%","").replace("+","")), default=None)
+
+    # ── Circuit breaker status ────────────────────────────────────────────────
+    cb_status = {"safe": True, "reason": "OK", "vix": 0.0, "spy_chg": 0.0}
+    try:
+        from circuit_breaker import check_market
+        cb_status = check_market()
+    except Exception:
+        pass
+
+    return JSONResponse(_json_safe({
+        "signals_total":         len(signals),
+        "signals_today":         len(today_signals),
+        "buy_count":             len(buy_signals),
+        "sell_count":            len(sell_signals),
+        "best_picks_total":      len(picks),
+        "resolved_picks":        len(resolved),
+        "win_rate":              win_rate,
+        "avg_gain_pct":          avg_gain,
+        "avg_loss_pct":          avg_loss,
+        "total_pnl_pct":         total_pnl,
+        "best_pick":             _pick_summary(best_pick)  if best_pick  else None,
+        "worst_pick":            _pick_summary(worst_pick) if worst_pick else None,
+        "recent_picks":          [_pick_summary(p) for p in picks[-10:]],
+        "vix":                   cb_status["vix"],
+        "spy_chg":               cb_status["spy_chg"],
+        "circuit_breaker_active": not cb_status["safe"],
+        "circuit_breaker_reason": cb_status["reason"],
+    }))
+
+
 @app.get("/api/watchlist/saved")
 async def api_watchlist_saved():
     """Return the persisted watchlist.json tickers."""
@@ -444,6 +543,81 @@ async def api_watchlist_add(ticker: str):
 async def api_watchlist_remove(ticker: str):
     updated = wl.remove(ticker.upper())
     return {"tickers": updated}
+
+
+# ── Sector rotation heatmap ────────────────────────────────────────────────────
+
+_SECTORS = [
+    ("XLK", "Technology"),    ("XLF", "Financials"),    ("XLE", "Energy"),
+    ("XLV", "Healthcare"),    ("XLY", "Consumer Disc."), ("XLP", "Consumer Staples"),
+    ("XLI", "Industrials"),   ("XLRE","Real Estate"),    ("XLB", "Materials"),
+    ("XLU", "Utilities"),     ("XLC", "Communication"),
+]
+_sector_cache: dict = {}
+
+@app.get("/api/sectors")
+async def api_sectors():
+    """Return today's % change for all 11 SPDR sector ETFs (15-min cache)."""
+    import yfinance as yf
+    import time as _time
+    now = _time.time()
+    if _sector_cache.get("ts", 0) + 900 > now:
+        return JSONResponse(_json_safe(_sector_cache.get("data", {})))
+    try:
+        etfs = [e for e, _ in _SECTORS]
+        raw  = yf.download(etfs, period="2d", interval="1d",
+                           auto_adjust=True, progress=False, group_by="ticker")
+        sectors = []
+        for etf, name in _SECTORS:
+            try:
+                df  = raw[etf] if len(etfs) > 1 else raw
+                cls = df["Close"].dropna().values.astype(float)
+                chg = round((cls[-1] / cls[-2] - 1) * 100, 2) if len(cls) >= 2 else 0.0
+                sectors.append({"etf": etf, "name": name, "change_pct": chg,
+                                 "price": round(float(cls[-1]), 2)})
+            except Exception:
+                sectors.append({"etf": etf, "name": name, "change_pct": 0.0, "price": 0.0})
+        sectors.sort(key=lambda x: x["change_pct"], reverse=True)
+        result = {"sectors": sectors, "cached_at": datetime.now().strftime("%H:%M:%S")}
+        _sector_cache.update({"ts": now, "data": result})
+        return JSONResponse(_json_safe(result))
+    except Exception as e:
+        return JSONResponse({"sectors": [], "error": str(e)})
+
+
+# ── Pre-market gap cache ───────────────────────────────────────────────────────
+
+_premarket_cache: dict = {}
+
+@app.get("/api/premarket")
+async def api_premarket():
+    """Return cached pre-market gap results (populated by the 8:30 AM scheduler job)."""
+    return JSONResponse(_json_safe(_premarket_cache or {"gaps": [], "scanned_at": None, "count": 0}))
+
+
+# ── Backtest endpoint ──────────────────────────────────────────────────────────
+
+@app.post("/api/backtest")
+async def api_backtest(body: dict):
+    """
+    Run a walk-forward backtest.
+    Body: {"tickers": ["AAPL", "TSLA"], "period": "1y"}
+    Returns win_rate, avg_gain_pct, avg_loss_pct, total_pnl_pct, max_drawdown_pct,
+            total_trades, trades[], per_ticker{}
+    """
+    tickers = [str(t).upper().strip() for t in body.get("tickers", [TICKER])]
+    period  = str(body.get("period", "1y"))
+    if period not in ("3mo", "6mo", "1y", "2y"):
+        period = "1y"
+    if not tickers:
+        return JSONResponse({"error": "no tickers provided"}, status_code=400)
+    try:
+        from backtester import backtest as _backtest
+        loop   = asyncio.get_event_loop()
+        result = await loop.run_in_executor(_executor, lambda: _backtest(tickers, period))
+        return JSONResponse(_json_safe(result))
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 if __name__ == "__main__":

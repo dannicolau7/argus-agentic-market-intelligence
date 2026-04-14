@@ -551,6 +551,22 @@ def _score_survivor(data: dict, news: dict,
 
     risk_penalty = risk
 
+    # ── Pattern bonus ──────────────────────────────────────────────────────────
+    pat_bonus = 0
+    try:
+        from pattern_detector import detect_patterns
+        pat_hits  = detect_patterns(closes, data["highs"], lows, data["volumes"])
+        for p in pat_hits:
+            if p["pattern"] in ("bull_flag", "cup_handle"):
+                pat_bonus += 15
+            elif p["pattern"] in ("double_bottom", "ascending_triangle"):
+                pat_bonus += 12
+            elif p["pattern"] == "breakout" and setup_type != "breakout":
+                pat_bonus += 8
+    except Exception:
+        pat_hits = []
+    setup_score += pat_bonus
+
     # ── Total ─────────────────────────────────────────────────────────────────
     total_score = context_score + setup_score + execution_score - risk_penalty
 
@@ -898,6 +914,23 @@ def scan_best_of_day(paper: bool = False, verbose: bool = False,
     loaded = [k.upper() for k, v in benchmarks.items() if len(v) > 0]
     print(f"✅ [Best-of-Day] Benchmarks loaded: {', '.join(loaded) or 'none — RS will be 0'}")
 
+    # ── Circuit breaker — skip BUY picks on crash days ────────────────────────
+    try:
+        from circuit_breaker import check_market
+        spy_chg = (
+            float((spy_closes[-1] / spy_closes[-2] - 1) * 100)
+            if len(spy_closes) >= 2 and float(spy_closes[-2]) > 0 else None
+        )
+        cb = check_market(spy_day_chg=spy_chg)
+        if not cb["safe"]:
+            print(f"\n🚫 [Best-of-Day] Circuit breaker: {cb['reason']}")
+            print("   No pick today — wait for safer market conditions.")
+            return {}
+        print(f"✅ [Best-of-Day] Circuit breaker OK  "
+              f"(VIX {cb['vix']:.1f}, SPY {cb['spy_chg']:+.1f}%)")
+    except Exception as _cb_err:
+        print(f"⚠️  [Best-of-Day] Circuit breaker check failed (fail-open): {_cb_err}")
+
     # ── Bulk OHLCV download ────────────────────────────────────────────────────
     raw_data     = _bulk_download_batched(universe)
     n_downloaded = len(raw_data)
@@ -1027,6 +1060,13 @@ def scan_best_of_day(paper: bool = False, verbose: bool = False,
 
     if not qualifiers:
         print(f"\n⚠️  [Best-of-Day] No stocks scored ≥{MIN_SCORE} — no pick today.")
+        if not paper:
+            from alerts import send_whatsapp as _sw
+            _sw(
+                f"📊 Best-of-Day scan complete (7:45 AM)\n"
+                f"No qualifying stock today — nothing scored ≥{MIN_SCORE} pts.\n"
+                f"Scanned {n_universe} tickers. Stay patient. 💤"
+            )
         return {}
 
     top3 = qualifiers[:3]

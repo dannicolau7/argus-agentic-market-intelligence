@@ -69,16 +69,24 @@ class AgentState(TypedDict):
     # News node extras
     social_velocity:   dict
 
+    # Tech node extras (pattern detection)
+    patterns: list
+
     # Decision node
-    signal:       str
-    confidence:   float
-    entry_zone:   str
-    targets:      list
-    stop_loss:    float
-    reasoning:    str
-    action_plan:  str
-    rr_ratio:     float
-    should_alert: bool
+    signal:            str
+    confidence:        float
+    entry_zone:        str
+    targets:           list
+    stop_loss:         float
+    reasoning:         str
+    action_plan:       str
+    rr_ratio:          float
+    should_alert:      bool
+    trade_horizon:     str
+    horizon_reasoning: str
+
+    # Dedup guard — set True if ticker already has an active position
+    already_alerted: bool
 
     # Alert node
     alert_sent: bool
@@ -151,6 +159,7 @@ def make_initial_state(ticker: str, paper_trading: bool = False) -> AgentState:
         relative_strength={"rs_vs_spy": 0.0, "label": "n/a", "spy_chg": 0.0},
         score_breakdown={"raw_score": 0, "final_score": 0, "timing_mult": 1.0, "fired": [], "missed": []},
         social_velocity={"velocity": 1.0, "label": "no data"},
+        patterns=[],
         signal="HOLD",
         confidence=0.0,
         entry_zone="",
@@ -160,5 +169,8 @@ def make_initial_state(ticker: str, paper_trading: bool = False) -> AgentState:
         action_plan="",
         rr_ratio=0.0,
         should_alert=False,
+        trade_horizon="swing",
+        horizon_reasoning="",
+        already_alerted=False,
         alert_sent=False,
     )

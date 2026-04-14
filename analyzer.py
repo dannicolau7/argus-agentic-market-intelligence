@@ -58,6 +58,7 @@ def analyze_market(context: dict) -> dict:
     sentiment_score= context.get("sentiment_score", 50)
     news_summary   = context.get("news_summary", "")
     social_vel     = context.get("social_velocity", {})
+    patterns       = context.get("patterns", [])
 
     day_change_pct = ((price - prev_close) / prev_close * 100) if prev_close else 0.0
 
@@ -133,6 +134,13 @@ def analyze_market(context: dict) -> dict:
         float_label = f"elevated ({float_rot:.0f}% of float)"
     elif float_rot > 0:
         float_label = f"{float_rot:.0f}% of float"
+
+    # Pattern string
+    patterns_str = (
+        ",  ".join(f"{p['pattern']} ({p['confidence']:.0%}) — {p['description']}"
+                   for p in patterns)
+        if patterns else "None detected"
+    )
 
     # Pre-computed score breakdown string
     fired_str  = "  ".join(f"{s[0]} {s[1]}" for s in score_bd.get("fired", []))
@@ -228,6 +236,9 @@ BEARISH / PENALTY signals:
 
 Apply timing multiplier ×{t_mult} to final score.
 
+=== DETECTED CHART PATTERNS ===
+{patterns_str}
+
 === PRE-COMPUTED SCORE (validate and adjust if needed) ===
 {score_line}
 
@@ -243,6 +254,11 @@ IMPORTANT RULES:
 - T1 = nearest resistance, T2 = +8–10% from entry, T3 = +18–22% from entry
 - Risk/Reward must be ≥ 1.5:1 to issue a BUY
 
+TRADE HORIZON RULES (pick exactly one):
+- "intraday": RSI > 65 on daily (already extended), price at/above daily resistance, EMA stack mixed or bearish, pure intraday RVOL spike with no multi-day setup, or earnings ≤ 3 days away → take profits before the close
+- "swing": EMA stack BULLISH, MACD histogram just turned positive or strengthening, RSI 40–65 with room to run, price breaking out with volume, clear sector tailwind → 2–5 day hold, trail stop daily
+- "position": Major catalyst (earnings beat, FDA, partnership), RSI bouncing from deeply oversold (<35) on high volume, bullish alignment on daily AND weekly timeframe, strong sector rotation → week+ hold
+
 Respond ONLY with this exact JSON (no markdown fences):
 {{
   "signal": "BUY" or "SELL" or "HOLD",
@@ -251,7 +267,9 @@ Respond ONLY with this exact JSON (no markdown fences):
   "targets": [<T1 float>, <T2 float>, <T3 float>],
   "stop_loss": <float>,
   "reasoning": "<2-3 sentences: which signals fired, market regime, key risk>",
-  "action_plan": "<specific step-by-step: when to enter, where to add, when to exit, what invalidates the trade>"
+  "action_plan": "<specific step-by-step: when to enter, where to add, when to exit, what invalidates the trade>",
+  "trade_horizon": "intraday" or "swing" or "position",
+  "horizon_reasoning": "<1 sentence: the single most important factor that determined the timeframe>"
 }}"""
 
     try:
@@ -274,16 +292,37 @@ Respond ONLY with this exact JSON (no markdown fences):
             if start != -1 and end > start:
                 text = text[start:end]
 
-        result     = json.loads(text)
-        signal     = str(result.get("signal", "HOLD")).upper()
-        confidence = max(0, min(100, int(result.get("confidence", 0))))
-        targets    = [float(t) for t in result.get("targets", [])]
-        stop_loss  = float(result.get("stop_loss", round(price * 0.95, 4)))
+        result          = json.loads(text)
+        signal          = str(result.get("signal", "HOLD")).upper()
+        confidence      = max(0, min(100, int(result.get("confidence", 0))))
+        targets         = [float(t) for t in result.get("targets", [])]
+        stop_loss       = float(result.get("stop_loss", round(price * 0.95, 4)))
+        trade_horizon   = str(result.get("trade_horizon", "swing")).lower()
+        horizon_reason  = str(result.get("horizon_reasoning", ""))
+        if trade_horizon not in ("intraday", "swing", "position"):
+            trade_horizon = "swing"
 
         # Hard-apply earnings cap
         if confidence > earnings_cap:
             confidence = earnings_cap
             print(f"⚠️  [Analyzer] Earnings cap applied → capped at {earnings_cap}")
+
+        # Circuit breaker — suppress BUY on extreme fear / market selloff
+        if signal == "BUY":
+            try:
+                from circuit_breaker import check_market
+                spy_chg = context.get("market_regime", {}).get("spy_day_chg")
+                cb = check_market(spy_day_chg=spy_chg)
+                if not cb["safe"]:
+                    print(f"🚫 [Analyzer] Circuit breaker triggered: {cb['reason']}")
+                    signal     = "HOLD"
+                    confidence = 0
+                    result["reasoning"] = (
+                        f"⚠️ Circuit breaker active: {cb['reason']}. "
+                        f"BUY suppressed — wait for safer market conditions."
+                    )
+            except Exception as _cb_err:
+                print(f"⚠️  [Analyzer] Circuit breaker check failed (fail-open): {_cb_err}")
 
         # Compute R:R ratio
         try:
@@ -299,15 +338,19 @@ Respond ONLY with this exact JSON (no markdown fences):
 
         print(f"   📊 R:R ratio = {rr_ratio:.2f}:1")
 
+        print(f"   ⏱️  Trade horizon: {trade_horizon.upper()} — {horizon_reason[:60]}")
+
         return {
-            "signal":      signal,
-            "confidence":  confidence,
-            "entry_zone":  str(result.get("entry_zone", f"${price:.4f}")),
-            "targets":     targets,
-            "stop_loss":   stop_loss,
-            "reasoning":   str(result.get("reasoning", "")),
-            "action_plan": str(result.get("action_plan", "")),
-            "rr_ratio":    rr_ratio,
+            "signal":           signal,
+            "confidence":       confidence,
+            "entry_zone":       str(result.get("entry_zone", f"${price:.4f}")),
+            "targets":          targets,
+            "stop_loss":        stop_loss,
+            "reasoning":        str(result.get("reasoning", "")),
+            "action_plan":      str(result.get("action_plan", "")),
+            "rr_ratio":         rr_ratio,
+            "trade_horizon":    trade_horizon,
+            "horizon_reasoning": horizon_reason,
         }
 
     except json.JSONDecodeError as e:
@@ -320,10 +363,12 @@ Respond ONLY with this exact JSON (no markdown fences):
 
 def _fallback(price: float) -> dict:
     return {
-        "signal":     "HOLD",
-        "confidence": 0,
-        "entry_zone": f"${price:.4f}",
-        "targets":    [round(price * 1.05, 4), round(price * 1.10, 4), round(price * 1.20, 4)],
-        "stop_loss":  round(price * 0.95, 4),
-        "reasoning":  "Analysis unavailable — defaulting to HOLD.",
+        "signal":            "HOLD",
+        "confidence":        0,
+        "entry_zone":        f"${price:.4f}",
+        "targets":           [round(price * 1.05, 4), round(price * 1.10, 4), round(price * 1.20, 4)],
+        "stop_loss":         round(price * 0.95, 4),
+        "reasoning":         "Analysis unavailable — defaulting to HOLD.",
+        "trade_horizon":     "swing",
+        "horizon_reasoning": "",
     }

@@ -510,6 +510,18 @@ def tech_node(state: dict) -> dict:
             else "inside_BB"
         )
 
+        # ── Chart pattern detection ───────────────────────────────────────────
+        highs_arr = _sanitize(np.array([float(b["h"]) for b in bars], dtype=float))
+        lows_arr  = _sanitize(np.array([float(b["l"]) for b in bars], dtype=float))
+        try:
+            from pattern_detector import detect_patterns
+            patterns = detect_patterns(closes, highs_arr, lows_arr, volumes)
+        except Exception:
+            patterns = []
+        if patterns:
+            pat_names = ", ".join(p["pattern"] for p in patterns)
+            print(f"   🔷 Patterns: {pat_names}")
+
         # ── Pre-compute score breakdown (for transparency) ────────────────────
         from self_learner import get_weight_adjustments
         partial_state = {
@@ -561,6 +573,7 @@ def tech_node(state: dict) -> dict:
             "market_regime":      mkt_regime,
             "relative_strength":  rel_str,
             "score_breakdown":    score_bd,
+            "patterns":           patterns,
         }
 
     except Exception as e:
@@ -590,4 +603,5 @@ def tech_node(state: dict) -> dict:
             "relative_strength":  {"rs_vs_spy": 0.0, "label": "n/a", "spy_chg": 0.0},
             "score_breakdown":    {"raw_score": 0, "final_score": 0, "timing_mult": 1.0,
                                    "fired": [], "missed": []},
+            "patterns":           [],
         }

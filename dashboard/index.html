@@ -122,6 +122,36 @@
     .mem-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 11px; border-bottom: 1px solid #21262d; }
     .mem-key { color: var(--muted); }
 
+    /* ── Performance panel ── */
+    #tab-performance { padding: 10px 12px; }
+    .perf-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+    .perf-card-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); margin-bottom: 4px; }
+    .perf-card-value { font-size: 22px; font-weight: 700; line-height: 1.1; }
+    .perf-card-sub { font-size: 10px; color: var(--muted); margin-top: 3px; }
+    #perf-picks-table table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    #perf-picks-table th { text-align: left; padding: 5px 6px; color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--border); }
+    #perf-picks-table td { padding: 5px 6px; border-bottom: 1px solid #21262d; }
+    /* Sector heatmap */
+    .sector-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-bottom: 12px; }
+    .sector-tile { border-radius: 6px; padding: 7px 8px; text-align: center; border: 1px solid transparent; }
+    .sector-etf  { font-size: 11px; font-weight: 700; }
+    .sector-name { font-size: 9px; color: rgba(255,255,255,.55); margin-top: 1px; }
+    .sector-chg  { font-size: 14px; font-weight: 700; margin-top: 3px; }
+    /* Backtest UI */
+    .bt-input-row { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; }
+    .bt-input-row input  { flex: 1; background: var(--surface); border: 1px solid var(--border); color: var(--text); padding: 5px 8px; border-radius: 5px; font-size: 12px; }
+    .bt-input-row select { background: var(--surface); border: 1px solid var(--border); color: var(--text); padding: 5px 6px; border-radius: 5px; font-size: 12px; }
+    .bt-input-row button { background: #21262d; border: 1px solid var(--border); color: var(--text); padding: 5px 12px; border-radius: 5px; cursor: pointer; font-size: 11px; white-space: nowrap; }
+    .bt-input-row button:hover { background: var(--border); }
+    #bt-results { font-size: 11px; }
+    #bt-results table { width: 100%; border-collapse: collapse; }
+    #bt-results th { text-align: left; padding: 4px 6px; color: var(--muted); border-bottom: 1px solid var(--border); }
+    #bt-results td { padding: 4px 6px; border-bottom: 1px solid #21262d; }
+    /* Pre-market table */
+    #pm-table table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    #pm-table th { text-align: left; padding: 4px 6px; color: var(--muted); border-bottom: 1px solid var(--border); }
+    #pm-table td { padding: 4px 6px; border-bottom: 1px solid #21262d; }
+
     ::-webkit-scrollbar { width: 3px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
@@ -158,6 +188,7 @@
       <div class="tab" onclick="switchTab('history')">History</div>
       <div class="tab" onclick="switchTab('news')">News</div>
       <div class="tab" onclick="switchTab('watchlist')">Watchlist</div>
+      <div class="tab" onclick="switchTab('performance')">Performance</div>
     </div>
 
     <!-- Signal tab -->
@@ -181,6 +212,16 @@
             <div class="gauge-value" id="conf-big">—</div>
             <div class="gauge-sub" id="conf-sub">Waiting for analysis...</div>
           </div>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 0 8px;border-bottom:1px solid #21262d;margin-bottom:8px;">
+          <span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);">Horizon</span>
+          <span id="horizon-badge" class="pill" style="font-size:11px;">—</span>
+          <span id="horizon-reason" style="font-size:11px;color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;padding:0 0 10px;border-bottom:1px solid var(--border);margin-bottom:10px;flex-wrap:wrap;">
+          <span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);">Patterns</span>
+          <span id="patterns-row" style="display:flex;gap:5px;flex-wrap:wrap;"></span>
         </div>
 
         <div class="section-title">Trade Setup</div>
@@ -230,6 +271,74 @@
       <div id="watchlist-body"></div>
       <div class="memory-section" id="memory-section"></div>
     </div>
+
+    <!-- Performance tab -->
+    <div class="tab-panel" id="tab-performance">
+      <div id="perf-cb-banner" style="display:none;margin:8px 0;padding:8px 12px;background:#3d1a1a;border:1px solid #f85149;border-radius:6px;color:#f85149;font-size:12px;font-weight:600;"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px;">
+        <div class="perf-card" id="perf-winrate">
+          <div class="perf-card-label">Win Rate</div>
+          <div class="perf-card-value" id="perf-wr-val">—</div>
+          <div class="perf-card-sub" id="perf-wr-sub">no resolved trades</div>
+        </div>
+        <div class="perf-card">
+          <div class="perf-card-label">Avg Gain</div>
+          <div class="perf-card-value" id="perf-gain-val" style="color:#3fb950">—</div>
+          <div class="perf-card-sub" id="perf-gain-sub">on winners</div>
+        </div>
+        <div class="perf-card">
+          <div class="perf-card-label">Avg Loss</div>
+          <div class="perf-card-value" id="perf-loss-val" style="color:#f85149">—</div>
+          <div class="perf-card-sub" id="perf-loss-sub">on losers</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px;">
+        <div class="perf-card">
+          <div class="perf-card-label">Total P&amp;L</div>
+          <div class="perf-card-value" id="perf-pnl-val">—</div>
+          <div class="perf-card-sub" id="perf-pnl-sub">sum of resolved picks</div>
+        </div>
+        <div class="perf-card">
+          <div class="perf-card-label">VIX</div>
+          <div class="perf-card-value" id="perf-vix-val">—</div>
+          <div class="perf-card-sub">fear gauge (safe &lt; 25)</div>
+        </div>
+        <div class="perf-card">
+          <div class="perf-card-label">Signals Today</div>
+          <div class="perf-card-value" id="perf-today-val">—</div>
+          <div class="perf-card-sub" id="perf-today-sub">—</div>
+        </div>
+      </div>
+      <div style="font-size:11px;color:#8b949e;font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Recent Best Picks</div>
+      <div id="perf-picks-table">
+        <div style="color:#484f58;font-size:12px;text-align:center;padding:20px;">Loading...</div>
+      </div>
+
+      <!-- Sector Rotation Heatmap -->
+      <div style="font-size:11px;color:#8b949e;font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin:12px 0 6px;">Sector Rotation</div>
+      <div class="sector-grid" id="sector-grid">
+        <div style="color:#484f58;font-size:12px;text-align:center;padding:10px;grid-column:span 4;">Loading sectors...</div>
+      </div>
+
+      <!-- Pre-Market Gaps -->
+      <div style="font-size:11px;color:#8b949e;font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin:12px 0 6px;">Pre-Market Gaps <span id="pm-scanned-at" style="font-weight:400;text-transform:none;letter-spacing:0;color:#484f58;font-size:10px;"></span></div>
+      <div id="pm-table"><div style="color:#484f58;font-size:12px;padding:4px 0;">Scan runs at 8:30 AM ET</div></div>
+
+      <!-- Backtest -->
+      <div style="font-size:11px;color:#8b949e;font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin:12px 0 6px;">Backtest</div>
+      <div class="bt-input-row">
+        <input id="bt-tickers" placeholder="AAPL, TSLA, NVDA" value="AAPL,TSLA,NVDA"/>
+        <select id="bt-period">
+          <option value="3mo">3 months</option>
+          <option value="6mo">6 months</option>
+          <option value="1y" selected>1 year</option>
+          <option value="2y">2 years</option>
+        </select>
+        <button onclick="runBacktest()">▶ Run</button>
+      </div>
+      <div id="bt-stats" style="display:none;display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px;"></div>
+      <div id="bt-results"></div>
+    </div>
   </div>
 
 </div><!-- end .layout -->
@@ -238,7 +347,7 @@
 // ── Tab switching ──────────────────────────────────────────────────────────────
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach((t,i) => {
-    const names = ['signal','history','news','watchlist'];
+    const names = ['signal','history','news','watchlist','performance'];
     t.classList.toggle('active', names[i] === name);
   });
   document.querySelectorAll('.tab-panel').forEach(p => {
@@ -373,6 +482,214 @@ async function fetchWatchlist() {
   } catch(e) { console.error('fetchWatchlist:', e); }
 }
 
+// ── Fetch performance ──────────────────────────────────────────────────────────
+async function fetchPerformance() {
+  try {
+    const res  = await fetch('/api/performance');
+    const d    = await res.json();
+
+    // Circuit breaker banner
+    const banner = document.getElementById('perf-cb-banner');
+    if (d.circuit_breaker_active) {
+      banner.style.display = '';
+      banner.textContent   = '🚫 Circuit Breaker Active — ' + (d.circuit_breaker_reason || 'Market conditions unsafe');
+    } else {
+      banner.style.display = 'none';
+    }
+
+    // Win rate
+    const wr = d.win_rate != null ? d.win_rate.toFixed(1) + '%' : '—';
+    setText('perf-wr-val', wr);
+    const wrEl = document.getElementById('perf-wr-val');
+    if (d.win_rate != null) {
+      wrEl.style.color = d.win_rate >= 60 ? '#3fb950' : d.win_rate >= 45 ? '#d29922' : '#f85149';
+    }
+    setText('perf-wr-sub', d.resolved_picks != null ? d.resolved_picks + ' resolved trades' : 'no resolved trades');
+
+    // Avg gain / loss
+    setText('perf-gain-val', d.avg_gain_pct != null ? '+' + d.avg_gain_pct.toFixed(1) + '%' : '—');
+    setText('perf-gain-sub', 'on winners');
+    setText('perf-loss-val', d.avg_loss_pct != null ? d.avg_loss_pct.toFixed(1) + '%' : '—');
+    setText('perf-loss-sub', 'on losers');
+
+    // Total P&L
+    const pnl    = d.total_pnl_pct;
+    const pnlEl  = document.getElementById('perf-pnl-val');
+    pnlEl.textContent = pnl != null ? (pnl >= 0 ? '+' : '') + pnl.toFixed(1) + '%' : '—';
+    pnlEl.style.color = pnl == null ? '' : pnl >= 0 ? '#3fb950' : '#f85149';
+
+    // VIX
+    const vixEl = document.getElementById('perf-vix-val');
+    vixEl.textContent = d.vix != null ? d.vix.toFixed(1) : '—';
+    vixEl.style.color = d.vix == null ? '' : d.vix >= 30 ? '#f85149' : d.vix >= 25 ? '#d29922' : '#3fb950';
+
+    // Signals today
+    setText('perf-today-val', d.signals_today != null ? String(d.signals_today) : '—');
+    const todaySub = [];
+    if (d.buy_count)  todaySub.push(d.buy_count + ' BUY');
+    if (d.sell_count) todaySub.push(d.sell_count + ' SELL');
+    setText('perf-today-sub', todaySub.join(' · ') || 'no signals today');
+
+    // Recent picks table
+    const picks = d.recent_picks || [];
+    const tbl   = document.getElementById('perf-picks-table');
+    if (!picks.length) {
+      tbl.innerHTML = '<div style="color:#484f58;font-size:12px;text-align:center;padding:20px;">No best-picks data yet.</div>';
+      return;
+    }
+    tbl.innerHTML = `<table>
+      <thead><tr>
+        <th>Date</th><th>Ticker</th><th>Score</th><th>Price</th><th>Result</th><th>Gain/Loss</th>
+      </tr></thead>
+      <tbody>
+        ${picks.map(p => {
+          const gl  = parseFloat(p.actual_gain_loss_pct || 0);
+          const glStr = p.actual_gain_loss_pct ? (gl >= 0 ? '+' : '') + gl.toFixed(1) + '%' : '—';
+          const glCol = p.actual_gain_loss_pct ? (gl >= 0 ? '#3fb950' : '#f85149') : '#8b949e';
+          return `<tr>
+            <td style="color:#8b949e">${(p.date||'').slice(0,10)}</td>
+            <td style="font-weight:700;color:#58a6ff">${p.ticker||'—'}</td>
+            <td>${p.score||'—'}</td>
+            <td>${p.entry_price ? '$'+parseFloat(p.entry_price).toFixed(2) : '—'}</td>
+            <td>${p.outcome||'pending'}</td>
+            <td style="color:${glCol};font-weight:600">${glStr}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>`;
+  } catch(e) { console.error('fetchPerformance:', e); }
+}
+
+// ── Fetch sectors ──────────────────────────────────────────────────────────────
+async function fetchSectors() {
+  try {
+    const res  = await fetch('/api/sectors');
+    const data = await res.json();
+    renderSectors(data.sectors || []);
+  } catch(e) { console.error('fetchSectors:', e); }
+}
+
+function renderSectors(sectors) {
+  const grid = document.getElementById('sector-grid');
+  if (!sectors.length) {
+    grid.innerHTML = '<div style="color:#484f58;font-size:12px;text-align:center;padding:10px;grid-column:span 4;">No data</div>';
+    return;
+  }
+  const colorFor = (chg) => {
+    if (chg >  1.5) return { bg:'#1a4731', border:'#3fb950', fg:'#3fb950' };
+    if (chg >  0.5) return { bg:'#1a3020', border:'#2d7040', fg:'#3fb950' };
+    if (chg > -0.5) return { bg:'#21262d', border:'#30363d', fg:'#8b949e' };
+    if (chg > -1.5) return { bg:'#2d1a1a', border:'#703030', fg:'#f85149' };
+    return                 { bg:'#3d1a1a', border:'#f85149', fg:'#f85149' };
+  };
+  grid.innerHTML = sectors.map(s => {
+    const c = colorFor(s.change_pct);
+    const sign = s.change_pct >= 0 ? '+' : '';
+    return `<div class="sector-tile" style="background:${c.bg};border-color:${c.border}">
+      <div class="sector-etf">${s.etf}</div>
+      <div class="sector-name">${s.name}</div>
+      <div class="sector-chg" style="color:${c.fg}">${sign}${s.change_pct.toFixed(1)}%</div>
+    </div>`;
+  }).join('');
+}
+
+// ── Fetch pre-market ────────────────────────────────────────────────────────────
+async function fetchPremarket() {
+  try {
+    const res  = await fetch('/api/premarket');
+    const data = await res.json();
+    renderPremarket(data.gaps || [], data.scanned_at);
+  } catch(e) { console.error('fetchPremarket:', e); }
+}
+
+function renderPremarket(gaps, scannedAt) {
+  const ts = document.getElementById('pm-scanned-at');
+  if (ts) ts.textContent = scannedAt ? `(${scannedAt})` : '';
+  const tbl = document.getElementById('pm-table');
+  if (!gaps.length) {
+    tbl.innerHTML = '<div style="color:#484f58;font-size:12px;padding:4px 0;">No gaps yet — scan runs at 8:30 AM ET</div>';
+    return;
+  }
+  tbl.innerHTML = `<table>
+    <thead><tr><th>Ticker</th><th>Gap %</th><th>Pre-Mkt $</th><th>Prev Close</th><th>Vol</th></tr></thead>
+    <tbody>${gaps.map(g => {
+      const vol = g.premarket_vol;
+      const volStr = vol < 1e6 ? (vol/1000).toFixed(0)+'k' : (vol/1e6).toFixed(1)+'M';
+      return `<tr>
+        <td style="font-weight:700;color:#58a6ff">${g.ticker}</td>
+        <td style="color:#3fb950;font-weight:600">+${g.gap_pct.toFixed(1)}%</td>
+        <td>$${g.premarket_price.toFixed(2)}</td>
+        <td style="color:#8b949e">$${g.prev_close.toFixed(2)}</td>
+        <td style="color:#8b949e">${volStr}</td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table>`;
+}
+
+// ── Backtest ────────────────────────────────────────────────────────────────────
+async function runBacktest() {
+  const btn     = document.querySelector('.bt-input-row button');
+  const tickers = document.getElementById('bt-tickers').value.split(',').map(t => t.trim()).filter(Boolean);
+  const period  = document.getElementById('bt-period').value;
+  if (!tickers.length) return;
+
+  btn.textContent = '⏳';
+  btn.disabled    = true;
+  document.getElementById('bt-results').innerHTML = '<div style="color:#484f58;text-align:center;padding:12px;">Running backtest...</div>';
+  document.getElementById('bt-stats').style.display = 'none';
+
+  try {
+    const res    = await fetch('/api/backtest', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({tickers, period}),
+    });
+    const data = await res.json();
+
+    // Stats cards
+    const statsEl = document.getElementById('bt-stats');
+    const mkCard  = (label, val, color) =>
+      `<div class="perf-card"><div class="perf-card-label">${label}</div>
+       <div class="perf-card-value" style="color:${color};font-size:16px">${val}</div></div>`;
+    const wr   = data.win_rate   != null ? data.win_rate.toFixed(1)+'%' : '—';
+    const gain = data.avg_gain_pct != null ? '+'+data.avg_gain_pct.toFixed(1)+'%' : '—';
+    const loss = data.avg_loss_pct != null ? data.avg_loss_pct.toFixed(1)+'%' : '—';
+    const pnl  = data.total_pnl_pct;
+    const pnlStr = pnl != null ? (pnl>=0?'+':'')+pnl.toFixed(1)+'%' : '—';
+    const wrColor  = (data.win_rate||0) >= 55 ? '#3fb950' : (data.win_rate||0) >= 45 ? '#d29922' : '#f85149';
+    const pnlColor = (pnl||0) >= 0 ? '#3fb950' : '#f85149';
+    statsEl.style.display = 'grid';
+    statsEl.innerHTML = [
+      mkCard(`Trades (${data.total_trades})`, wr, wrColor),
+      mkCard('Avg Gain', gain, '#3fb950'),
+      mkCard('Total P&amp;L', pnlStr, pnlColor),
+    ].join('');
+
+    // Trades table
+    const trades = data.trades || [];
+    document.getElementById('bt-results').innerHTML = trades.length ? `<table>
+      <thead><tr><th>Date</th><th>Ticker</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Reason</th></tr></thead>
+      <tbody>${trades.slice(0,20).map(t => {
+        const gl = t.gain_loss_pct;
+        const glColor = gl > 0 ? '#3fb950' : '#f85149';
+        return `<tr>
+          <td style="color:#8b949e">${t.entry_date}</td>
+          <td style="font-weight:700;color:#58a6ff">${t.ticker}</td>
+          <td>$${t.entry_price.toFixed(2)}</td>
+          <td>$${t.exit_price.toFixed(2)}</td>
+          <td style="color:${glColor};font-weight:600">${gl>=0?'+':''}${gl.toFixed(1)}%</td>
+          <td style="color:#8b949e;font-size:10px">${t.exit_reason}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>` : '<div style="color:#484f58;text-align:center;padding:12px;">No trades generated for this period.</div>';
+  } catch(e) {
+    document.getElementById('bt-results').innerHTML = `<div style="color:#f85149;padding:8px;">Error: ${e.message}</div>`;
+  } finally {
+    btn.textContent = '▶ Run';
+    btn.disabled    = false;
+  }
+}
+
 // ── Update signal UI ───────────────────────────────────────────────────────────
 function updateSignalUI(state, history) {
   const signal  = state.signal || 'HOLD';
@@ -394,6 +711,41 @@ function updateSignalUI(state, history) {
 
   // Confidence gauge
   updateGauge(conf, signal);
+
+  // Trade horizon badge
+  const horizonMap = {
+    intraday: { label: 'Intraday',   color: '#d29922', bg: '#2d2a1a', border: '#d29922' },
+    swing:    { label: 'Swing 2–5d', color: '#58a6ff', bg: '#1a2a4d', border: '#58a6ff' },
+    position: { label: 'Position 1w+', color: '#3fb950', bg: '#1a4731', border: '#3fb950' },
+  };
+  const h     = (state.trade_horizon || 'swing').toLowerCase();
+  const hInfo = horizonMap[h] || horizonMap.swing;
+  const hBadge = document.getElementById('horizon-badge');
+  hBadge.textContent    = hInfo.label;
+  hBadge.style.color    = hInfo.color;
+  hBadge.style.background = hInfo.bg;
+  hBadge.style.border   = `1px solid ${hInfo.border}`;
+  setText('horizon-reason', state.horizon_reasoning || '');
+
+  // Chart patterns
+  const patRow = document.getElementById('patterns-row');
+  const patColors = {
+    bull_flag:          { color:'#3fb950', bg:'#1a4731', border:'#3fb950' },
+    double_bottom:      { color:'#3fb950', bg:'#1a4731', border:'#3fb950' },
+    cup_handle:         { color:'#a371f7', bg:'#2a1a4d', border:'#a371f7' },
+    ascending_triangle: { color:'#58a6ff', bg:'#1a2a4d', border:'#58a6ff' },
+    breakout:           { color:'#d29922', bg:'#2d2a1a', border:'#d29922' },
+  };
+  const pats = state.patterns || [];
+  if (pats.length) {
+    patRow.innerHTML = pats.map(p => {
+      const c = patColors[p.pattern] || { color:'#8b949e', bg:'#21262d', border:'#30363d' };
+      const label = p.pattern.replace(/_/g,' ');
+      return `<span class="pill" title="${p.description}" style="font-size:10px;color:${c.color};background:${c.bg};border:1px solid ${c.border}">${label} ${(p.confidence*100).toFixed(0)}%</span>`;
+    }).join('');
+  } else {
+    patRow.innerHTML = '<span style="font-size:11px;color:#484f58">None detected</span>';
+  }
 
   // Trade setup
   setText('s-entry', state.entry_zone || '—');
@@ -631,15 +983,19 @@ async function triggerRun() {
 
 // ── Bootstrap ──────────────────────────────────────────────────────────────────
 async function init() {
-  await Promise.all([fetchBars(), fetchState(), fetchNews(), fetchWatchlist()]);
+  await Promise.all([fetchBars(), fetchState(), fetchNews(), fetchWatchlist(),
+                     fetchPerformance(), fetchSectors(), fetchPremarket()]);
   resizeCharts();
 }
 
 init();
-setInterval(fetchState,     30000);   // state every 30s
-setInterval(fetchNews,     120000);   // news every 2 min
-setInterval(fetchWatchlist, 60000);   // watchlist every 1 min
-setInterval(fetchBars,     300000);   // bars every 5 min
+setInterval(fetchState,       30000);   // state every 30s
+setInterval(fetchNews,       120000);   // news every 2 min
+setInterval(fetchWatchlist,   60000);   // watchlist every 1 min
+setInterval(fetchBars,       300000);   // bars every 5 min
+setInterval(fetchPerformance, 60000);   // performance every 1 min
+setInterval(fetchSectors,    300000);   // sectors every 5 min
+setInterval(fetchPremarket,  300000);   // pre-market every 5 min
 </script>
 </body>
 </html>

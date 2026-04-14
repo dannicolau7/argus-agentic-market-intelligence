@@ -3,6 +3,7 @@ scheduler.py — Full-day trading schedule.
 
   3:00 AM  Overnight news scan  (WhatsApp if score >= 85)
   7:45 AM  Best-of-Day selection (gate filter → score → Claude → WhatsApp)
+  8:30 AM  Pre-market gap scanner (top gap movers → WhatsApp)
   9:25 AM  "Market opens in 5 min" alert
   9:30 AM  Live monitoring (handled by main.py's monitoring_loop)
   4:00 PM  "Market closed" + after-hours summary
@@ -132,6 +133,33 @@ async def _run_morning_sweep(paper: bool):
     print(f"✅ [7:45 AM] Best-of-Day complete. Winner: {top}")
 
 
+async def _run_premarket_scan(paper: bool):
+    """8:30 AM — scan for pre-market gap movers and alert via WhatsApp."""
+    print(f"\n{'─'*50}")
+    print("⚡ [8:30 AM] Running pre-market gap scanner...")
+    try:
+        from premarket_scanner import scan_premarket_gaps, format_premarket_msg
+        import main as _main
+        tickers = list(dict.fromkeys(wl.load()))  # watchlist first
+        loop    = asyncio.get_running_loop()
+        gaps    = await loop.run_in_executor(_executor, scan_premarket_gaps, tickers)
+        # Store in main.py's cache so the dashboard can show it
+        _main._premarket_cache.update({
+            "gaps":       gaps[:10],
+            "scanned_at": datetime.now(tz=EST).strftime("%H:%M:%S"),
+            "count":      len(gaps),
+        })
+        if gaps:
+            msg = format_premarket_msg(gaps[:3])
+            print(f"✅ [8:30 AM] {len(gaps)} gap(s) found:\n{msg}")
+            if not paper:
+                send_whatsapp(msg)
+        else:
+            print("✅ [8:30 AM] No qualifying pre-market gaps today.")
+    except Exception as e:
+        print(f"❌ [8:30 AM] Pre-market scan error: {e}")
+
+
 async def _send_market_opens_soon(paper: bool):
     top = _sweep_results[:2] if _sweep_results else []
     watch_lines = "\n".join(
@@ -243,6 +271,11 @@ async def scheduler_loop(paper: bool, daily_log: list, signal_memory: dict):
             if weekday and _in_window(7, 45) and _should_fire("morning_sweep"):
                 _mark_fired("morning_sweep")
                 await _run_morning_sweep(paper)
+
+            # ── 8:30 AM — Pre-market gap scan
+            if weekday and _in_window(8, 30) and _should_fire("premarket_gaps"):
+                _mark_fired("premarket_gaps")
+                await _run_premarket_scan(paper)
 
             # ── 9:25 AM — Market opens soon
             if weekday and _in_window(9, 25) and _should_fire("market_opens_soon"):

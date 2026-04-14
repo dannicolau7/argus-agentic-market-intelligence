@@ -23,6 +23,10 @@ PUSHOVER_USER_KEY = os.getenv("PUSHOVER_USER_KEY", "")
 TICKER = os.getenv("TICKER", "BZAI")
 MONITOR_INTERVAL = int(os.getenv("MONITOR_INTERVAL", "60"))
 
+# Circuit breaker
+VIX_THRESHOLD      = float(os.getenv("VIX_THRESHOLD",      "25"))
+SPY_DROP_THRESHOLD = float(os.getenv("SPY_DROP_THRESHOLD", "-1.5"))
+
 # LangSmith — tracing is activated automatically when these are set in the environment.
 # No explicit SDK calls needed; LangGraph picks them up on import.
 LANGCHAIN_TRACING_V2 = os.getenv("LANGCHAIN_TRACING_V2", "false")

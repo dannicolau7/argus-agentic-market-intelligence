@@ -61,7 +61,8 @@ def send_push(title: str, message: str):
 def send_alert(ticker: str, signal: str, price: float,
                entry_low: float, entry_high: float,
                targets: list, stop: float,
-               reason: str, confidence: int) -> bool:
+               reason: str, confidence: int,
+               horizon: str = "swing", horizon_reason: str = "") -> bool:
     """
     Send a trade alert via WhatsApp (always) and Pushover (if configured).
     targets: list of [T1, T2, T3] floats from the analyzer.
@@ -88,9 +89,19 @@ def send_alert(ticker: str, signal: str, price: float,
     stop_pct = (entry_mid - stop) / entry_mid * 100 if entry_mid > 0 else 0
     targets_str = '\n'.join(target_lines)
 
+    horizon_labels = {
+        "intraday": "Intraday (exit before close)",
+        "swing":    "Swing (2–5 days)",
+        "position": "Position (1+ week)",
+    }
+    horizon_line = horizon_labels.get(horizon, "Swing (2–5 days)")
+    if horizon_reason:
+        horizon_line += f" — {horizon_reason}"
+
     message = (
         f'Stock AI Agent - {emoji}\n'
         f'Ticker:     {ticker} at ${price:.2f}\n'
+        f'Horizon:    {horizon_line}\n'
         f'Entry zone: ${entry_low:.2f} – ${entry_high:.2f}\n'
         f'Targets:\n{targets_str}\n'
         f'Stop loss:  ${stop:.2f} (-{stop_pct:.1f}%)\n'

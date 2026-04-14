@@ -15,6 +15,11 @@ def alert_node(state: dict) -> dict:
     ticker        = state["ticker"]
     price         = state.get("current_price", 0.0)
 
+    # Suppress duplicate alert if ticker already has an active position
+    if state.get("already_alerted") and signal == "BUY":
+        print(f"🔕 [AlertAgent] {ticker} — duplicate BUY suppressed (already in active position)")
+        return {**state, "alert_sent": False}
+
     if not should_alert:
         emoji = "🟢" if signal == "BUY" else "🔴" if signal == "SELL" else "🟡"
         print(f"{emoji} [AlertAgent] {signal} conf={confidence}/100 — no alert needed")
@@ -43,9 +48,11 @@ def alert_node(state: dict) -> dict:
         except Exception:
             entry_low = entry_high = price
 
-        targets   = state.get("targets", [])
-        stop_loss = state.get("stop_loss", 0.0)
-        reasoning = state.get("reasoning", "")[:200]
+        targets          = state.get("targets", [])
+        stop_loss        = state.get("stop_loss", 0.0)
+        reasoning        = state.get("reasoning", "")[:200]
+        trade_horizon    = state.get("trade_horizon", "swing")
+        horizon_reasoning = state.get("horizon_reasoning", "")
 
         sent = send_alert(
             ticker=ticker,
@@ -57,6 +64,8 @@ def alert_node(state: dict) -> dict:
             stop=stop_loss,
             reason=reasoning,
             confidence=int(confidence),
+            horizon=trade_horizon,
+            horizon_reason=horizon_reasoning,
         )
         if sent:
             print("✅ [AlertAgent] Delivered via WhatsApp + Push")

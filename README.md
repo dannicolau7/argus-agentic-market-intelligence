@@ -1,8 +1,8 @@
 # Stock AI Agent
 
-> AI-powered stock monitoring system that combines three discovery engines, layered technical scoring, news-driven catalyst detection, and Claude AI to generate real-time BUY / SELL / HOLD signals with WhatsApp alerts.
+> AI-powered stock monitoring system that combines three discovery engines, layered technical scoring, chart pattern recognition, news-driven catalyst detection, and Claude AI to generate real-time BUY / SELL / HOLD signals with WhatsApp alerts and a live trading dashboard.
 
-**Version:** v2.0 &nbsp;|&nbsp; **Status:** Active Development
+**Version:** v3.0 &nbsp;|&nbsp; **Status:** Active Development
 
 ---
 
@@ -18,23 +18,26 @@ Continuously monitors your saved tickers every 5 minutes during market hours (9:
 
 1. Fetches real-time price and OHLCV bars (yfinance + Polygon)
 2. Scores social sentiment (StockTwits bull/bear ratio + StockTwits velocity)
-3. Calculates RSI, MACD, EMA stack, volume, ATR, support and resistance
-4. Classifies the latest news headline into a catalyst category
-5. Computes relative strength vs SPY and QQQ across 1d / 5d / 20d
-6. Detects the best-matching setup pattern (gap-and-go, breakout, pullback, oversold bounce)
-7. Builds a 4-layer score: context + setup + execution − risk penalties
-8. Passes everything to Claude AI which decides BUY / SELL / HOLD with confidence
-9. Fires a WhatsApp alert via Twilio when confidence ≥ 65
+3. Calculates RSI, MACD, EMA stack, volume, ATR, VWAP, support and resistance
+4. Detects chart patterns algorithmically (bull flag, double bottom, ascending triangle, cup & handle, breakout)
+5. Classifies the latest news headline into a catalyst category
+6. Computes relative strength vs SPY and QQQ across 1d / 5d / 20d
+7. Detects the best-matching setup pattern (gap-and-go, breakout, pullback, oversold bounce)
+8. Builds a 4-layer score: context + setup (with pattern bonus) + execution − risk penalties
+9. Checks the VIX/SPY circuit breaker — suppresses BUY signals when market is too dangerous
+10. Passes everything to Claude AI which decides BUY / SELL / HOLD with confidence and trade horizon
+11. Fires a WhatsApp alert via Twilio when confidence ≥ 65; deduplicates so each position only alerts once
 
 #### Discovery Engine 2 — Morning Market Scanner (7:45 AM EST daily)
 
 Scans all ~6,000 US stocks every morning before the open to find the single best opportunity of the day. No watchlist needed — it finds stocks you've never heard of.
 
 1. Applies Gate 0: dollar volume ≥ $100k (eliminates illiquid garbage)
-2. Runs the full 4-layer scoring pipeline on every survivor
-3. Ranks by total score and selects the top candidate
-4. Sends a pre-market WhatsApp summary with entry zone, targets, and stop
-5. Logs pick to `best_picks_log.csv` and tracks forward accuracy at +1d and +3d
+2. Checks the circuit breaker — if VIX ≥ 25 or SPY drops ≥ 1.5%, skips the scan for the day
+3. Runs the full 4-layer scoring pipeline (including pattern bonus) on every survivor
+4. Ranks by total score and selects the top candidate
+5. Sends a pre-market WhatsApp summary with entry zone, targets, stop, and trade horizon
+6. If nothing qualifies, sends a "no pick today" WhatsApp so you always know the scan ran
 
 #### Discovery Engine 3 — 24/7 News Watcher (every 5 minutes, around the clock)
 
@@ -58,14 +61,17 @@ Monitors news for **all** US stocks — not just your watchlist — by polling t
 | Layer | Tool | Purpose | Cost |
 |---|---|---|---|
 | Agent orchestration | LangGraph + LangChain | Multi-agent pipeline, state management | Free |
-| AI reasoning | Claude API (claude-sonnet-4-6) | Signal interpretation, confidence scoring | Pay-per-use |
+| AI reasoning | Claude API (claude-sonnet-4-6) | Signal interpretation, confidence scoring, trade horizon | Pay-per-use |
 | Historical data | Polygon.io | Daily OHLCV bars, news, ticker details | Free tier |
-| Real-time data | yfinance | Live price, intraday 5-min candles, benchmarks | Free |
+| Real-time data | yfinance | Live price, intraday 5-min candles, benchmarks, pre-market | Free |
 | Social sentiment | StockTwits API | Bull/bear ratio + message velocity | Free, no auth |
-| News classification | features/news_classifier.py | Phrase-level catalyst detection | Free (local) |
-| Relative strength | features/relative_strength.py | Multi-horizon RS vs SPY + QQQ | Free (local) |
-| Setup detection | setups/ (4 modules) | Gap-and-go, breakout, pullback, bounce | Free (local) |
-| Self-learning | self_learner.py | Tracks signal win rates, adjusts weights | Free (local) |
+| Pattern detection | `pattern_detector.py` | 5 chart patterns from raw OHLCV (algorithmic, no ML) | Free (local) |
+| Backtesting | `backtester.py` | Walk-forward rule-based backtest on historical bars | Free (local) |
+| Circuit breaker | `circuit_breaker.py` | VIX + SPY drop guard (suppresses BUY in danger zones) | Free (local) |
+| News classification | `features/news_classifier.py` | Phrase-level catalyst detection | Free (local) |
+| Relative strength | `features/relative_strength.py` | Multi-horizon RS vs SPY + QQQ | Free (local) |
+| Setup detection | `setups/` (4 modules) | Gap-and-go, breakout, pullback, bounce | Free (local) |
+| Self-learning | `self_learner.py` | Tracks signal win rates, adjusts weights | Free (local) |
 | WhatsApp alerts | Twilio WhatsApp API | BUY/SELL signal delivery | Free sandbox |
 | Push notifications | Pushover | iOS/Android push notifications | $5 one-time |
 | Dashboard server | FastAPI + uvicorn | REST API + HTML serving | Free |
@@ -81,15 +87,18 @@ stock-ai-agent/
 ├── main.py                  # Entry point — three async loops, FastAPI server, market hours
 ├── config.py                # Loads all API keys from .env via python-dotenv
 ├── graph.py                 # Builds and compiles the LangGraph pipeline
-├── analyzer.py              # Calls Claude API with full market context → structured signal
+├── analyzer.py              # Calls Claude API with full market context → structured signal + horizon
 ├── polygon_feed.py          # Polygon.io + yfinance data layer (bars, price, news)
 ├── alerts.py                # Twilio WhatsApp + Pushover senders
 ├── logger.py                # Appends every BUY/SELL signal to signals_log.csv
 ├── market_scanner.py        # Morning scanner — scans ~6k stocks, picks best of day
 ├── news_watcher.py          # 24/7 news-driven stock discovery loop
-├── scheduler.py             # Daily event scheduler (10 timed events)
+├── scheduler.py             # Daily event scheduler (11 timed events, 3 AM – 11 PM)
+├── circuit_breaker.py       # VIX + SPY circuit breaker — 15-min cached safety check
+├── pattern_detector.py      # Algorithmic chart pattern detection (5 patterns)
+├── backtester.py            # Walk-forward rule-based backtester — no Claude API
+├── premarket_scanner.py     # 8:30 AM pre-market gap scanner (yfinance prepost=True)
 ├── self_learner.py          # Signal win-rate tracker — learns from past picks
-├── backtest.py              # Rule-based backtester
 ├── watchlist_manager.py     # Persist tickers to watchlist.json between sessions
 ├── watchlist.json           # Saved ticker watchlist
 ├── quick_check.py           # Instant price + news snapshot for any ticker(s)
@@ -100,9 +109,9 @@ stock-ai-agent/
 ├── agents/
 │   ├── data_agent.py        # Node 1 — fetches price, bars, volume, news
 │   ├── news_agent.py        # Node 2 — StockTwits sentiment + news classification
-│   ├── tech_agent.py        # Node 3 — RSI, MACD, EMA stack, ATR, volume
+│   ├── tech_agent.py        # Node 3 — RSI, MACD, EMA stack, ATR, volume, patterns
 │   ├── decision_agent.py    # Node 4 — calls analyzer.py, gates on confidence >= 65
-│   └── alert_agent.py       # Node 5 — fires WhatsApp + push, respects paper mode
+│   └── alert_agent.py       # Node 5 — fires WhatsApp + push; suppresses duplicate BUY alerts
 │
 ├── features/
 │   ├── __init__.py
@@ -117,7 +126,7 @@ stock-ai-agent/
 │   └── oversold_bounce.py   # RSI ≤ 35 + RVOL ≥ 2x + price near 20-bar support
 │
 └── dashboard/
-    └── index.html           # Live trading terminal — candlesticks, RSI, signal log, news
+    └── index.html           # Live trading terminal — 5 tabs: Signal, History, News, Watchlist, Performance
 ```
 
 ### Agent Pipeline Flow
@@ -127,7 +136,8 @@ fetch_data → analyze_news → analyze_tech → decide → alert
     │              │              │            │         │
  price/bars   StockTwits     RSI/MACD/EMA  Claude AI  WhatsApp
               RS vs SPY/QQQ  setup detect   4-layer    +Pushover
-              news classify  execution      score
+              news classify  pattern detect  score      (deduped)
+                             VWAP/OBV       horizon
 ```
 
 ---
@@ -141,8 +151,14 @@ fetch_data → analyze_news → analyze_tech → decide → alert
 | EMA Stack (9/21/50) | Calculated from daily bars | Free | ✅ | ⭐⭐⭐⭐ |
 | Volume / RVOL | yfinance / Polygon | Free | ✅ | ⭐⭐⭐⭐⭐ |
 | ATR | Calculated from OHLCV | Free | ✅ | ⭐⭐⭐⭐ |
+| VWAP | Calculated from intraday bars | Free | ✅ | ⭐⭐⭐⭐ |
 | Support / Resistance | 20-bar high/low | Free | ✅ | ⭐⭐⭐⭐ |
 | Relative Strength (1d/5d/20d) | vs SPY + QQQ via yfinance | Free | ✅ | ⭐⭐⭐⭐⭐ |
+| Chart patterns (5) | pattern_detector.py (algorithmic) | Free | ✅ | ⭐⭐⭐⭐ |
+| Trade horizon | Claude AI (intraday/swing/position) | Pay-per-use | ✅ | ⭐⭐⭐⭐ |
+| VIX circuit breaker | yfinance ^VIX (15-min cache) | Free | ✅ | ⭐⭐⭐⭐⭐ |
+| Pre-market gap | yfinance prepost=True (1-min bars) | Free | ✅ | ⭐⭐⭐⭐ |
+| Sector rotation | 11 SPDR ETFs via yfinance | Free | ✅ | ⭐⭐⭐⭐ |
 | Social sentiment | StockTwits bull/bear + velocity | Free | ✅ | ⭐⭐⭐ |
 | News classification | Polygon headlines (local NLP) | Free | ✅ | ⭐⭐⭐⭐ |
 | Setup pattern | gap_and_go / breakout / pullback / bounce | Free | ✅ | ⭐⭐⭐⭐ |
@@ -155,7 +171,7 @@ fetch_data → analyze_news → analyze_tech → decide → alert
 
 ## 5. Scoring System
 
-Scores are built in four independent layers. There is no fixed maximum — a perfect setup can score 150+, a weak one 30.
+Scores are built in four independent layers. There is no fixed maximum — a perfect setup with multiple pattern bonuses can score 165+, a weak one 30.
 
 ### Layer 1 — Context Score (market fit)
 
@@ -171,7 +187,7 @@ Scores are built in four independent layers. There is no fixed maximum — a per
 | Price | < $10 (momentum-friendly) | +5 |
 | Relative strength | RS composite ≤ -7% (lagging market) | −20 |
 
-### Layer 2 — Setup Score (pattern quality)
+### Layer 2 — Setup Score (pattern quality + chart pattern bonus)
 
 All qualifying setups are scored; the **highest-scoring** setup wins (not the first match).
 
@@ -182,6 +198,16 @@ All qualifying setups are scored; the **highest-scoring** setup wins (not the fi
 | Breakout | Price ≥ 20-day high, RVOL ≥ 2x, RSI 50–67 | ~115 |
 | First Pullback | EMA9 > EMA21 > EMA50, near EMA9, RSI 38–55 | ~90 |
 | General | No pattern — RVOL and news bonus only | ~50 |
+
+**Chart pattern bonus** (additive on top of setup score):
+
+| Pattern | Bonus |
+|---|---|
+| Bull Flag | +15 pts |
+| Cup & Handle | +15 pts |
+| Double Bottom | +12 pts |
+| Ascending Triangle | +12 pts |
+| Breakout (20-day high + vol ≥ 1.5×) | +8 pts |
 
 ### Layer 3 — Execution Score (technical confirmation only)
 
@@ -205,7 +231,11 @@ All qualifying setups are scored; the **highest-scoring** setup wins (not the fi
 ### Alert threshold
 
 ```
-Total score ≥ 68  AND  Claude confidence ≥ 65  →  WhatsApp alert fires
+VIX < 25 AND SPY drop < 1.5%  (circuit breaker safe)
+  AND  Total score ≥ 68
+  AND  Claude confidence ≥ 65
+  AND  ticker NOT already in active position  (dedup guard)
+→  WhatsApp alert fires
 Otherwise  →  HOLD (no alert sent)
 ```
 
@@ -217,26 +247,97 @@ Score: 142 (ctx=45 setup=67 exec=50 risk=-20)
 
 ---
 
-## 6. News Classification
+## 6. Chart Pattern Detection
 
-Headlines from the Polygon news API are classified into 10 categories using phrase-level matching (not single words — to prevent false positives like "cloud offering" triggering dilution).
+`pattern_detector.py` scans the last 30 bars of daily OHLCV data algorithmically — no machine learning, no API calls, fully deterministic.
 
-| Category | Example Phrases | Score Adj |
+| Pattern | Detection Logic | Confidence |
 |---|---|---|
-| fda_approval | "FDA approves", "FDA clearance", "breakthrough designation" | +25 |
-| earnings_beat | "beats estimates", "raises guidance", "record revenue" | +25 |
-| contract_win | "wins contract", "awarded contract", "defense contract" | +20 |
-| partnership | "strategic partnership", "joint venture", "licensing agreement" | +15 |
-| upgrade | "upgrades to buy", "price target raised", "initiates buy" | +10 |
-| general | No match | 0 |
-| downgrade | "downgrades to sell", "price target cut" | −10 |
-| earnings_miss | "misses estimates", "lowered guidance", "swings to loss" | −20 |
-| offering_dilution | "secondary offering", "private placement", "prospectus supplement" | −25 |
-| fda_rejection | "FDA rejects", "complete response letter", "refuse to file" | −25 |
+| **Bull Flag** | Pole: ≥8% gain over 3-5 bars. Flag: last 5 bars range < 3%, volume declining | 0.0–1.0 |
+| **Double Bottom** | Two lows within 3% of each other in last 30 bars, recovery ≥5% between | 0.0–1.0 |
+| **Ascending Triangle** | Last 15 bars: flat resistance (highs within 2%), rising lows (positive slope) | 0.0–1.0 |
+| **Cup & Handle** | 15–30 bar U-shape near prior high, followed by 3–5 bar handle < 50% of cup depth | 0.0–1.0 |
+| **Breakout** | Price crosses 20-day high today, volume ≥ 1.5× average | 0.0–1.0 |
+
+Patterns appear as colored pills on the **Signal tab** of the dashboard, and are included in the prompt Claude receives for final reasoning.
 
 ---
 
-## 7. API Keys Required
+## 7. Trade Horizon Prediction
+
+Claude classifies every BUY signal into one of three horizons:
+
+| Horizon | Meaning | Typical Hold |
+|---|---|---|
+| **Intraday** | RSI > 65 on daily, at resistance, mixed EMA stack, or earnings ≤ 3 days | Exit before close |
+| **Swing** | EMA stack bullish, MACD just turned positive, RSI 40–65 | 2–5 days |
+| **Position** | Major catalyst, RSI bouncing from < 35 on high volume | 1+ week |
+
+The horizon and one-sentence reason appear in the WhatsApp alert and on the Signal tab dashboard badge.
+
+---
+
+## 8. VIX + SPY Circuit Breaker
+
+`circuit_breaker.py` acts as a market-wide safety gate. It is checked:
+
+- At the start of every `scan_best_of_day()` call — aborts the entire scan if unsafe
+- In `analyzer.py` after Claude's response — overrides a BUY to HOLD with a warning message
+
+**Thresholds (configurable in `.env`):**
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `VIX_THRESHOLD` | 25 | VIX above this → circuit breaker triggers |
+| `SPY_DROP_THRESHOLD` | -1.5 | SPY intraday drop % below this → triggers |
+
+Results are cached for 15 minutes to avoid redundant downloads across multiple ticker scans.
+
+---
+
+## 9. Pre-Market Gap Scanner
+
+`premarket_scanner.py` runs at **8:30 AM EST** every trading day via the scheduler. It finds stocks that have already moved significantly before the market opens.
+
+- Data: yfinance 1-minute bars with `prepost=True`
+- Filters: gap ≥ 3%, pre-market volume ≥ 30k, price $0.50–$100
+- Parallel fetches: 10 concurrent workers via `ThreadPoolExecutor`
+- Sends top 3 gaps to WhatsApp; stores top 10 in the `/api/premarket` endpoint
+
+```
+⚡ Pre-Market Gaps (8:30 AM ET)
+BZAI  +8.5%  $2.18  vol 2.3M
+NVDA  +4.1%  $142.30  vol 890k
+SMCI  +3.2%  $28.40  vol 540k
+💡 Confirm with volume at open
+```
+
+---
+
+## 10. Backtester
+
+`backtester.py` runs a **walk-forward rule-based backtest** on 1–2 years of historical daily bars. It uses the same quantitative scoring as the live scanner — no Claude API, so it can process thousands of bars cheaply.
+
+### Logic
+
+- Scores each bar using RSI, MACD histogram, EMA alignment, volume ratio, gap %, Bollinger, and support
+- Triggers a simulated BUY at the **next bar's open** when score ≥ 60 (no lookahead bias)
+- Exit conditions: stop loss (−5% or −1 ATR), target (+8%), or 5-bar timeout
+- Tracks: win rate, avg gain %, avg loss %, total P&L %, max drawdown %, trade list
+
+### Run via API
+
+```
+POST /api/backtest
+{"tickers": ["AAPL", "TSLA"], "period": "1y"}
+→ {win_rate, avg_gain_pct, avg_loss_pct, total_pnl_pct, max_drawdown_pct, total_trades, trades[]}
+```
+
+Results are shown in the **Performance tab** of the dashboard.
+
+---
+
+## 11. API Keys Required
 
 | Variable | Where to Get It | Cost |
 |---|---|---|
@@ -266,11 +367,13 @@ TWILIO_TO_NUMBER=whatsapp:+40xxxxxxxxx
 PUSHOVER_APP_TOKEN=...        # optional
 PUSHOVER_USER_KEY=...         # optional
 MONITOR_INTERVAL=300
+VIX_THRESHOLD=25              # optional — default 25
+SPY_DROP_THRESHOLD=-1.5       # optional — default -1.5
 ```
 
 ---
 
-## 8. How to Run
+## 12. How to Run
 
 ### Install dependencies
 
@@ -312,7 +415,7 @@ python3 main.py --ticker BZAI --port 8080
 
 `main.py` starts all three engines automatically:
 - Watchlist monitoring loop (every `MONITOR_INTERVAL` seconds, market hours)
-- Daily scheduler (7:45 AM scanner, 4:30 PM report, etc.)
+- Daily scheduler (3:00 AM through 11:00 PM, 11 timed events)
 - 24/7 news watcher (every 5 minutes, all clocks)
 
 ### Watchlist management
@@ -336,8 +439,12 @@ python3 market_scanner.py
 ### Backtesting
 
 ```bash
-python3 backtest.py --ticker BZAI --days 30
-python3 backtest.py --ticker AAPL --days 90 --forward 10
+# Via API (while main.py is running)
+curl -X POST http://localhost:8000/api/backtest \
+  -H "Content-Type: application/json" \
+  -d '{"tickers": ["AAPL", "TSLA"], "period": "1y"}'
+
+# Or use the backtest tab in the dashboard UI
 ```
 
 ### Dashboard
@@ -348,11 +455,16 @@ Once `main.py` is running, open your browser:
 http://localhost:8000
 ```
 
-Tabs: **Signal** · **History** · **News** · **Watchlist**
+**Tabs:**
+- **Signal** — live signal card with confidence gauge, horizon badge, chart patterns, entry/targets/stop
+- **History** — all past BUY/SELL signals with prices and confidence
+- **News** — latest Polygon news headlines for monitored tickers
+- **Watchlist** — add / remove tickers without restarting
+- **Performance** — win rate, P&L stats, VIX/circuit breaker status, sector rotation heatmap, pre-market gaps, backtest runner
 
 ---
 
-## 9. Alert Format
+## 13. Alert Format
 
 Every BUY or SELL signal is sent as a WhatsApp message:
 
@@ -364,50 +476,57 @@ Targets:    $1.95 / $2.10 / $2.35
 Stop Loss:  $1.62
 RSI:        34.2  |  RVOL: 4.8x
 Score: 142 (ctx=45 setup=67 exec=50 risk=-20)
+Horizon:    Swing (2–5 days) — EMA stack bullish, MACD just crossed positive
 Signals: gap +8.3%, RVOL 4.8x 🔥, RS +9.2% vs mkt, earnings beat 🟢
 
 RSI oversold with gap-and-go setup on earnings beat catalyst.
 RVOL 4.8x confirms institutional entry near the $1.65 support.
 ```
 
-```
-🔴 SELL — BZAI  [breakout_fail]
-Price:      $1.9900
-Entry Zone: $1.95 – $2.00
-Targets:    $1.78 / $1.65 / $1.50
-Stop Loss:  $2.14
-RSI:        74.1  |  RVOL: 2.1x
-Score: 78 (ctx=20 setup=38 exec=25 risk=-5)
-Signals: RSI 74 overbought, share offering 🔴
-
-RSI overbought on dilution catalyst. MACD bearish crossover with
-price rejecting at resistance. Stop above recent high $2.14.
-```
-
-HOLD signals are **never** sent — alerts only fire when confidence ≥ 65.
+HOLD signals are **never** sent. Duplicate BUY alerts for the same open position are **suppressed** — you get one alert when the signal fires, not one every 5 minutes.
 
 ---
 
-## 10. Daily Scheduler
+## 14. Daily Scheduler
 
-The scheduler runs 10 timed events each trading day:
+The scheduler runs 11 timed events each trading day (Mon–Fri). The 3 AM overnight scan runs every night including weekends.
 
 | Time (EST) | Event |
 |---|---|
-| 7:45 AM | Morning market scanner — best-of-day pick sent via WhatsApp |
-| 8:00 AM | Pre-market news scan — any high-conviction catalyst alerts |
-| 9:00 AM | Market open prep — watchlist summary |
-| 9:30 AM | Market open — monitoring loop starts |
-| 12:00 PM | Midday check — any new setups emerging |
-| 2:00 PM | Power hour prep |
-| 3:30 PM | Final 30 min alert if strong signal |
-| 4:00 PM | Market close — monitoring loop pauses |
-| 4:30 PM | Daily performance report via WhatsApp |
-| 5:00 PM | Pick accuracy update — 1d forward returns logged |
+| 3:00 AM | Overnight news scan — WhatsApp if score ≥ 85 |
+| 7:45 AM | Best-of-Day selection — full scanner → WhatsApp pick (or "no pick today") |
+| 8:30 AM | Pre-market gap scanner — top gap movers → WhatsApp |
+| 9:25 AM | "Market opens in 5 min" alert with top watch ticker |
+| 9:30 AM | Live monitoring starts (handled by `main.py` monitoring loop) |
+| 4:00 PM | Market closed + open positions summary → WhatsApp |
+| 4:30 PM | Daily performance report → WhatsApp |
+| 6:00 PM | Earnings scan — WhatsApp if score ≥ 75 |
+| 8:00 PM | Evening news scan — WhatsApp if score ≥ 85 |
+| 10:00 PM | Final scan — WhatsApp if score ≥ 85 |
+| 11:00 PM | Good night summary → graceful shutdown |
 
 ---
 
-## 11. Self-Learner
+## 15. News Classification
+
+Headlines from the Polygon news API are classified into 10 categories using phrase-level matching (not single words — to prevent false positives like "cloud offering" triggering dilution).
+
+| Category | Example Phrases | Score Adj |
+|---|---|---|
+| fda_approval | "FDA approves", "FDA clearance", "breakthrough designation" | +25 |
+| earnings_beat | "beats estimates", "raises guidance", "record revenue" | +25 |
+| contract_win | "wins contract", "awarded contract", "defense contract" | +20 |
+| partnership | "strategic partnership", "joint venture", "licensing agreement" | +15 |
+| upgrade | "upgrades to buy", "price target raised", "initiates buy" | +10 |
+| general | No match | 0 |
+| downgrade | "downgrades to sell", "price target cut" | −10 |
+| earnings_miss | "misses estimates", "lowered guidance", "swings to loss" | −20 |
+| offering_dilution | "secondary offering", "private placement", "prospectus supplement" | −25 |
+| fda_rejection | "FDA rejects", "complete response letter", "refuse to file" | −25 |
+
+---
+
+## 16. Self-Learner
 
 `self_learner.py` reads `best_picks_log.csv` after the market closes and updates signal weights based on which signals were present in winning vs losing picks.
 
@@ -427,7 +546,7 @@ Weights are loaded at scanner startup and adjust the scoring multipliers on each
 
 ---
 
-## 12. Data Sources Explained
+## 17. Data Sources Explained
 
 ### Polygon.io (free tier)
 
@@ -437,8 +556,8 @@ Weights are loaded at scanner startup and adjust the scoring multipliers on each
 
 ### yfinance (free, no key)
 
-- **Provides:** Real-time last price, intraday bars (1m/5m/15m/1h), SPY/QQQ benchmark closes
-- **Used for:** Live price, dashboard candles, RS computation, quick gate in news watcher
+- **Provides:** Real-time last price, intraday bars (1m/5m/15m/1h), SPY/QQQ benchmark closes, pre-market bars, sector ETF data, VIX
+- **Used for:** Live price, dashboard candles, RS computation, pre-market gaps, sector heatmap, circuit breaker VIX
 - **Limitation:** Unofficial API, occasional rate-limiting; Polygon is the fallback for price
 
 ### StockTwits (free, no key)
@@ -450,7 +569,7 @@ Weights are loaded at scanner startup and adjust the scoring multipliers on each
 
 ---
 
-## 13. Roadmap
+## 18. Roadmap
 
 ### v1.0 — Shipped ✅
 
@@ -466,7 +585,7 @@ Weights are loaded at scanner startup and adjust the scoring multipliers on each
 - [x] Market hours awareness (9:30 AM – 4:00 PM EST)
 - [x] Daily report at 4:30 PM EST
 
-### v2.0 — Current ✅
+### v2.0 — Shipped ✅
 
 - [x] Multi-ticker monitoring loop
 - [x] Morning market scanner (7:45 AM, ~6,000 stocks)
@@ -483,20 +602,32 @@ Weights are loaded at scanner startup and adjust the scoring multipliers on each
 - [x] Score breakdown in every WhatsApp alert
 - [x] Daily scheduler with 10 timed events
 
-### v3.0 — Planned 📋
+### v3.0 — Current ✅
 
+- [x] Trade horizon prediction — Claude classifies every BUY as intraday / swing / position
+- [x] Chart pattern detection — 5 patterns (bull flag, double bottom, ascending triangle, cup & handle, breakout) with score bonus
+- [x] Pre-market gap scanner — 8:30 AM WhatsApp with top gap movers
+- [x] Walk-forward backtester — rule-based, no Claude API, via `/api/backtest`
+- [x] Sector rotation heatmap — 11 SPDR ETFs, color-coded by day %, on Performance tab
+- [x] VIX + SPY circuit breaker — suppresses BUY signals when market is in danger
+- [x] Performance dashboard tab — win rate, P&L stats, recent picks, VIX gauge
+- [x] Duplicate alert dedup guard — one WhatsApp per open position, not one per scan cycle
+- [x] "No pick today" WhatsApp when morning scanner finds nothing qualifying
+
+### v4.0 — Planned 📋
+
+- [ ] Alpaca paper/live order execution — auto-place market orders from BUY signals
+- [ ] Position sizing — risk-based share calculation (e.g. 2% account risk per trade)
 - [ ] Global rate limiter shared across all three discovery engines
 - [ ] SEC EDGAR insider trading signal (free)
 - [ ] Options flow via Unusual Whales ($50/mo)
 - [ ] Dark pool prints via Unusual Whales ($50/mo)
-- [ ] Sector ETF RS (third benchmark in composite)
 - [ ] Parallel node execution in LangGraph pipeline
-- [ ] Browser-based watchlist editor in dashboard
 - [ ] Email digest option (SendGrid)
 
 ---
 
-## 14. Important Disclaimers
+## 19. Important Disclaimers
 
 > ⚠️ **This software is for educational and research purposes only.**
 
@@ -509,7 +640,7 @@ Weights are loaded at scanner startup and adjust the scoring multipliers on each
 
 ---
 
-## 15. Author
+## 20. Author
 
 **Dan Nicolau**
 Senior QA Engineer → AI QA Architect
