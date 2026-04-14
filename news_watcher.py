@@ -1,14 +1,19 @@
 """
 news_watcher.py — 24/7 news-driven stock discovery.
 
-Polls Polygon /v2/reference/news (ALL stocks, no ticker filter) every 5 min.
-When a new article is detected for any stock:
-  1. Quick gate: price $0.50–$50, min volume (yfinance, 0 Polygon calls)
-  2. Cooldown: skip if already alerted for this ticker within 4 hours
-  3. Full pipeline: fetch_data → news → tech → decide → alert
-  4. WhatsApp sent if signal BUY/SELL and confidence >= 68
+Three complementary news sources, all sharing the same 4-hour cooldown:
 
-Runs 24/7 alongside monitoring_loop and scheduler_loop in main.py.
+  1. Polygon /v2/reference/news (ALL stocks, every 5 min) — broad market coverage,
+     ~15–45 min lag from press release publication.
+
+  2. Yahoo Finance news (watchlist tickers only, every 90 s) — faster source,
+     typically 2–5 min lag. yf_news_watcher_loop() runs alongside.
+
+  3. SEC EDGAR 8-K RSS (edgar_watcher.py, every 60 s) — catches FDA decisions,
+     earnings, contract wins at filing time, before any news aggregator.
+
+Polygon watcher kept for broad-market discovery (finds stocks not on watchlist).
+Yahoo Finance + EDGAR fill the latency gap for watchlist tickers.
 """
 
 import asyncio
@@ -19,6 +24,7 @@ from datetime import datetime
 import requests
 import yfinance as yf
 
+import watchlist_manager as wl
 from config import POLYGON_API_KEY
 from graph import GRAPH, make_initial_state
 from alerts import send_whatsapp
@@ -32,9 +38,10 @@ PRICE_MAX            = 50.0
 MIN_AVG_VOLUME       = 50_000       # ignore dead / illiquid stocks
 MAX_PER_POLL         = 2            # max full-pipeline runs per cycle (rate limit)
 
-_seen_ids:   set  = set()   # Polygon article IDs already processed
-_alerted_at: dict = {}      # ticker → time.time() of last alert
-_executor = ThreadPoolExecutor(max_workers=1)
+_seen_ids:    set  = set()   # Polygon article IDs already processed
+_yf_seen_ids: set  = set()   # Yahoo Finance article UUIDs already processed
+_alerted_at:  dict = {}      # ticker → time.time() of last alert (shared across all sources)
+_executor = ThreadPoolExecutor(max_workers=2)
 
 
 # ── News fetching ──────────────────────────────────────────────────────────────
@@ -103,8 +110,11 @@ def _mark_alerted(ticker: str):
 
 # ── Pipeline ───────────────────────────────────────────────────────────────────
 
-def _run_pipeline(ticker: str, paper: bool) -> dict:
-    return GRAPH.invoke(make_initial_state(ticker, paper_trading=paper))
+def _run_pipeline(ticker: str, paper: bool, news_triggered: bool = True) -> dict:
+    """Run the full LangGraph pipeline. news_triggered=True lowers confidence threshold to 55."""
+    state = make_initial_state(ticker, paper_trading=paper)
+    state["news_triggered"] = news_triggered
+    return GRAPH.invoke(state)
 
 
 def _format_alert(result: dict, headline: str) -> str:
@@ -133,6 +143,105 @@ def _format_alert(result: dict, headline: str) -> str:
         f"Why: {reason}\n\n"
         f"Plan: {action}"
     )
+
+
+# ── Yahoo Finance news watcher (90-second poll, watchlist tickers only) ────────
+
+async def _check_yf_ticker_news(ticker: str, paper: bool, loop) -> None:
+    """
+    Fetch Yahoo Finance news for one ticker and run the pipeline if a new
+    article is found. Shares _alerted_at and _quick_gate with Polygon watcher.
+    """
+    try:
+        arts = await loop.run_in_executor(
+            None, lambda: yf.Ticker(ticker).news or []
+        )
+    except Exception:
+        return
+
+    new_arts = []
+    for art in arts:
+        uid = art.get("uuid") or art.get("id") or ""
+        if not uid or uid in _yf_seen_ids:
+            continue
+        _yf_seen_ids.add(uid)
+        age_s = time.time() - art.get("providerPublishTime", 0)
+        if age_s > 7200:   # ignore articles older than 2 hours
+            continue
+        new_arts.append(art)
+
+    if not new_arts:
+        return
+    if _already_alerted(ticker):
+        return
+    if not _quick_gate(ticker):
+        return
+
+    headline = new_arts[0].get("title", "")
+    now_s    = datetime.now().strftime("%H:%M")
+    print(f"\n📰 [YF-News] {ticker}: {headline[:70]}")
+
+    try:
+        result = await loop.run_in_executor(
+            _executor, _run_pipeline, ticker, paper, True
+        )
+        signal = result.get("signal", "HOLD")
+        conf   = result.get("confidence", 0)
+        emoji  = "🟢" if signal == "BUY" else "🔴" if signal == "SELL" else "🟡"
+        print(f"   {emoji} [YF-News] {ticker} → {signal} {conf}/100")
+
+        if signal in ("BUY", "SELL") and conf >= CONFIDENCE_THRESHOLD:
+            msg = _format_alert(result, headline)
+            _mark_alerted(ticker)
+            if not paper:
+                send_whatsapp(msg)
+                print(f"   ✅ [YF-News] Alert sent for {ticker}")
+            else:
+                print(f"   📋 [YF-News] PAPER — would send:\n{msg}")
+        else:
+            print(f"   💤 [YF-News] {ticker} → below threshold ({CONFIDENCE_THRESHOLD})")
+    except Exception as e:
+        print(f"   ❌ [YF-News] Pipeline error for {ticker}: {e}")
+
+
+async def yf_news_watcher_loop(paper: bool = False):
+    """
+    Polls Yahoo Finance news for every watchlist ticker every 90 seconds.
+    Much faster than Polygon (2–5 min lag vs 15–45 min).
+    Started as a separate asyncio task alongside news_watcher_loop.
+    """
+    mode = "PAPER" if paper else "LIVE"
+    print(f"📰 [YF-News] Started — poll every 90s | {mode}")
+    loop = asyncio.get_running_loop()
+
+    # Seed: mark current articles as seen so startup doesn't flood old news
+    print("📰 [YF-News] Seeding Yahoo Finance article history...")
+    init_tickers = wl.load()
+    for ticker in init_tickers:
+        try:
+            arts = await loop.run_in_executor(
+                None, lambda t=ticker: yf.Ticker(t).news or []
+            )
+            for art in arts:
+                uid = art.get("uuid") or art.get("id") or ""
+                if uid:
+                    _yf_seen_ids.add(uid)
+        except Exception:
+            pass
+    print(f"📰 [YF-News] Seeded {len(_yf_seen_ids)} articles. Watching {len(init_tickers)} ticker(s).")
+
+    while True:
+        try:
+            await asyncio.sleep(90)
+            tickers = wl.load()
+            for ticker in tickers:
+                await _check_yf_ticker_news(ticker, paper, loop)
+        except asyncio.CancelledError:
+            print("📰 [YF-News] Stopped.")
+            break
+        except Exception as e:
+            print(f"❌ [YF-News] Loop error: {e}")
+            await asyncio.sleep(30)
 
 
 # ── Main loop ──────────────────────────────────────────────────────────────────

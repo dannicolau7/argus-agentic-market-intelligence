@@ -88,6 +88,9 @@ class AgentState(TypedDict):
     # Dedup guard — set True if ticker already has an active position
     already_alerted: bool
 
+    # Set True when pipeline is triggered by a news/spike/EDGAR event (lowers threshold to 55)
+    news_triggered: bool
+
     # Alert node
     alert_sent: bool
 
@@ -172,5 +175,6 @@ def make_initial_state(ticker: str, paper_trading: bool = False) -> AgentState:
         trade_horizon="swing",
         horizon_reasoning="",
         already_alerted=False,
+        news_triggered=False,
         alert_sent=False,
     )

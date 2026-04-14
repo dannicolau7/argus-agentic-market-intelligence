@@ -133,14 +133,17 @@ class AppState:
 
 
 _app_state = AppState()
-_executor  = ThreadPoolExecutor(max_workers=1)
+_executor  = ThreadPoolExecutor(max_workers=4)   # supports parallel ticker scanning
 
 
 # ── Graph execution ────────────────────────────────────────────────────────────
 
-def _run_sync(ticker: str, paper: bool, already_alerted: bool = False) -> dict:
+def _run_sync(ticker: str, paper: bool,
+              already_alerted: bool = False,
+              news_triggered: bool = False) -> dict:
     state = make_initial_state(ticker, paper_trading=paper)
     state["already_alerted"] = already_alerted
+    state["news_triggered"]  = news_triggered
     return GRAPH.invoke(state)
 
 
@@ -207,13 +210,13 @@ def _check_exits(ticker: str, price: float) -> str | None:
     return None
 
 
-async def run_once(ticker: str = None):
+async def run_once(ticker: str = None, news_triggered: bool = False):
     ticker = ticker or TICKER
     loop   = asyncio.get_running_loop()
     # Suppress re-alerting if this ticker already has an active BUY position
     already_alerted = ticker in _app_state.signal_memory
     result = await loop.run_in_executor(
-        _executor, _run_sync, ticker, PAPER, already_alerted
+        _executor, _run_sync, ticker, PAPER, already_alerted, news_triggered
     )
 
     _store_result(result)
@@ -290,16 +293,19 @@ async def monitoring_loop():
         print(f"📋 Watchlist: {', '.join(saved)}")
     print()
 
+    # Semaphore limits concurrent Polygon-hitting pipelines to protect free tier (5 req/min)
+    _sem = asyncio.Semaphore(2)
+
+    async def _run_gated(t: str):
+        async with _sem:
+            await run_once(t)
+
     while True:
         try:
             if is_market_open():
-                for i, t in enumerate(TICKERS):
-                    if i > 0:
-                        await asyncio.sleep(20)  # avoid Polygon 5 req/min rate limit
-                    await run_once(t)
+                await asyncio.gather(*[_run_gated(t) for t in TICKERS])
             else:
-                now_est  = datetime.now(tz=EST)
-                now_date = now_est.strftime("%Y-%m-%d")
+                now_est = datetime.now(tz=EST)
                 print(
                     f"🕐 [Monitor] Market closed "
                     f"({now_est.strftime('%a %H:%M EST')}) — "
@@ -316,17 +322,26 @@ async def monitoring_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from scheduler import scheduler_loop
-    from news_watcher import news_watcher_loop
+    from news_watcher import news_watcher_loop, yf_news_watcher_loop
+    from spike_watcher import spike_watcher_loop
+    from edgar_watcher import edgar_watcher_loop
+
     task_monitor   = asyncio.create_task(monitoring_loop())
     task_scheduler = asyncio.create_task(
         scheduler_loop(paper=PAPER, daily_log=_app_state.daily_log,
                         signal_memory=_app_state.signal_memory)
     )
     task_watcher   = asyncio.create_task(news_watcher_loop(paper=PAPER))
+    task_yf_news   = asyncio.create_task(yf_news_watcher_loop(paper=PAPER))
+    task_spike     = asyncio.create_task(spike_watcher_loop(run_once, PAPER, wl.load))
+    task_edgar     = asyncio.create_task(edgar_watcher_loop(paper=PAPER))
     yield
     task_monitor.cancel()
     task_scheduler.cancel()
     task_watcher.cancel()
+    task_yf_news.cancel()
+    task_spike.cancel()
+    task_edgar.cancel()
 
 
 app = FastAPI(title=f"Stock AI Agent — {TICKER}", lifespan=lifespan)

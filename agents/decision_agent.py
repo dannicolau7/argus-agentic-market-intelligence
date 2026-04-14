@@ -6,7 +6,8 @@ Gate: only flags should_alert=True when confidence >= 65.
 from langsmith import traceable
 from analyzer import analyze_market
 
-CONFIDENCE_THRESHOLD = 65
+CONFIDENCE_THRESHOLD      = 65
+NEWS_CONFIDENCE_THRESHOLD = 55   # lower gate when a news/spike/EDGAR event is the trigger
 
 
 @traceable(name="decision_agent", tags=["claude", "signal"])
@@ -21,9 +22,15 @@ def decision_node(state: dict) -> dict:
         signal     = result["signal"]
         confidence = result["confidence"]
 
-        if confidence < CONFIDENCE_THRESHOLD:
+        threshold = (
+            NEWS_CONFIDENCE_THRESHOLD
+            if state.get("news_triggered")
+            else CONFIDENCE_THRESHOLD
+        )
+
+        if confidence < threshold:
             print(
-                f"⚠️  [DecisionAgent] Confidence {confidence}/100 < threshold {CONFIDENCE_THRESHOLD} "
+                f"⚠️  [DecisionAgent] Confidence {confidence}/100 < threshold {threshold} "
                 f"— overriding {signal} → HOLD"
             )
             signal         = "HOLD"
