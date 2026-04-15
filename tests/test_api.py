@@ -74,6 +74,27 @@ class TestApiState:
         assert data["state"]["current_price"] is None
         assert data["state"]["atr"]           is None
 
+    def test_numpy_scalars_sanitized_to_null(self):
+        """_json_safe() must handle np.float64, np.int64, np.bool_, and np.nan."""
+        import numpy as np
+        main._app_state.ticker_states["BZAI"] = {
+            "ticker":        "BZAI",
+            "signal":        "BUY",
+            "confidence":    np.int64(72),
+            "current_price": np.float64(float("nan")),
+            "volume":        np.float64(1_500_000.0),
+            "volume_spike":  np.bool_(True),
+            "atr":           np.float64(float("inf")),
+        }
+        r = client.get("/api/state")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["state"]["current_price"] is None        # np.float64(nan) → None
+        assert data["state"]["atr"]           is None        # np.float64(inf) → None
+        assert data["state"]["confidence"]    == 72          # np.int64 → int
+        assert data["state"]["volume"]        == 1_500_000.0 # np.float64 finite → float
+        assert data["state"]["volume_spike"]  is True        # np.bool_ → bool
+
     def test_history_list_returned(self):
         main._app_state.histories["BZAI"] = [
             {"timestamp": "2024-01-01T10:00:00", "price": 2.45,

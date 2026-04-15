@@ -338,44 +338,31 @@ async def lifespan(app: FastAPI):
     from portfolio_agent    import portfolio_agent_loop, init_positions_table
     from reflection_agent   import reflection_agent_loop
     from performance_tracker import init_db, performance_tracker_loop
+    import task_supervisor as sup
 
     init_db()
     init_positions_table()
 
-    task_monitor    = asyncio.create_task(monitoring_loop())
-    task_scheduler  = asyncio.create_task(
-        scheduler_loop(paper=PAPER, daily_log=_app_state.daily_log,
-                        signal_memory=_app_state.signal_memory)
-    )
-    task_watcher    = asyncio.create_task(news_watcher_loop(paper=PAPER))
-    task_yf_news    = asyncio.create_task(yf_news_watcher_loop(paper=PAPER))
-    task_spike      = asyncio.create_task(spike_watcher_loop(run_once, PAPER, wl.load))
-    task_edgar      = asyncio.create_task(edgar_watcher_loop(paper=PAPER))
-    task_geo        = asyncio.create_task(geo_watcher_loop())
-    task_macro      = asyncio.create_task(macro_watcher_loop())
-    task_earnings   = asyncio.create_task(earnings_watcher_loop(extra_tickers=TICKERS))
-    task_breadth    = asyncio.create_task(breadth_watcher_loop())
-    task_social     = asyncio.create_task(social_watcher_loop(extra_tickers=TICKERS))
-    task_discovery  = asyncio.create_task(discovery_agent_loop(static_watchlist_fn=wl.load))
-    task_portfolio  = asyncio.create_task(portfolio_agent_loop(paper=PAPER))
-    task_tracker    = asyncio.create_task(performance_tracker_loop())
-    task_reflection = asyncio.create_task(reflection_agent_loop(paper=PAPER))
+    sup.start("monitor",    monitoring_loop)
+    sup.start("scheduler",  lambda: scheduler_loop(
+        paper=PAPER, daily_log=_app_state.daily_log,
+        signal_memory=_app_state.signal_memory))
+    sup.start("news",       lambda: news_watcher_loop(paper=PAPER))
+    sup.start("yf_news",    lambda: yf_news_watcher_loop(paper=PAPER))
+    sup.start("spike",      lambda: spike_watcher_loop(run_once, PAPER, wl.load))
+    sup.start("edgar",      lambda: edgar_watcher_loop(paper=PAPER))
+    sup.start("geo",        geo_watcher_loop)
+    sup.start("macro",      macro_watcher_loop)
+    sup.start("earnings",   lambda: earnings_watcher_loop(extra_tickers=TICKERS))
+    sup.start("breadth",    breadth_watcher_loop)
+    sup.start("social",     lambda: social_watcher_loop(extra_tickers=TICKERS))
+    sup.start("discovery",  lambda: discovery_agent_loop(static_watchlist_fn=wl.load))
+    sup.start("portfolio",  lambda: portfolio_agent_loop(paper=PAPER))
+    sup.start("tracker",    performance_tracker_loop)
+    sup.start("reflection", lambda: reflection_agent_loop(paper=PAPER))
+
     yield
-    task_monitor.cancel()
-    task_scheduler.cancel()
-    task_watcher.cancel()
-    task_yf_news.cancel()
-    task_spike.cancel()
-    task_edgar.cancel()
-    task_geo.cancel()
-    task_macro.cancel()
-    task_earnings.cancel()
-    task_breadth.cancel()
-    task_social.cancel()
-    task_discovery.cancel()
-    task_portfolio.cancel()
-    task_tracker.cancel()
-    task_reflection.cancel()
+    await sup.cancel_all()
 
 
 app = FastAPI(
@@ -387,14 +374,41 @@ app = FastAPI(
 
 
 def _json_safe(value):
-    """Recursively replace NaN/Inf values so FastAPI JSON responses stay valid."""
+    """
+    Recursively sanitize a value for JSON serialization.
+    Handles Python float/int, numpy scalars (np.float64, np.int64, np.bool_),
+    pandas NA/NaT/NaN, and nested dicts/lists/tuples.
+    """
+    # numpy scalar types (float and int families)
+    try:
+        import numpy as np
+        if isinstance(value, np.floating):
+            return None if not math.isfinite(float(value)) else float(value)
+        if isinstance(value, np.integer):
+            return int(value)
+        if isinstance(value, np.bool_):
+            return bool(value)
+        if isinstance(value, np.ndarray):
+            return [_json_safe(v) for v in value.tolist()]
+    except ImportError:
+        pass
+
+    # pandas NA / NaT / pd.NA
+    try:
+        import pandas as pd
+        if value is pd.NA or value is pd.NaT:
+            return None
+        if isinstance(value, pd.Timestamp):
+            return value.isoformat()
+    except ImportError:
+        pass
+
+    # Python native float — must come after numpy check
     if isinstance(value, float):
         return value if math.isfinite(value) else None
     if isinstance(value, dict):
         return {k: _json_safe(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_json_safe(v) for v in value]
-    if isinstance(value, tuple):
+    if isinstance(value, (list, tuple)):
         return [_json_safe(v) for v in value]
     return value
 
@@ -480,6 +494,24 @@ async def api_trigger_run():
             await run_once(t)
     asyncio.create_task(_run_all())
     return {"status": "triggered", "tickers": TICKERS}
+
+
+@app.get("/api/health")
+async def api_health():
+    """Per-task health status: running / error / cancelled + restart count."""
+    import task_supervisor as sup
+    import world_context as wctx
+    ctx = wctx.get()
+    return JSONResponse(_json_safe({
+        "tasks":   sup.get_health(),
+        "context": {
+            "geo_updated_at":      ctx["geo"]["updated_at"],
+            "macro_updated_at":    ctx["macro"]["updated_at"],
+            "breadth_updated_at":  ctx["breadth"]["updated_at"],
+            "earnings_updated_at": ctx["earnings"]["updated_at"],
+            "social_updated_at":   ctx["social"]["updated_at"],
+        },
+    }))
 
 
 @app.get("/api/log")

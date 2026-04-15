@@ -98,11 +98,17 @@ def check_market(spy_day_chg: float = None) -> dict:
             return merged
         return _cache_result
 
-    # Fetch VIX
-    vix = _fetch_vix()
+    # Fetch VIX — fail open: if fetch throws, treat as safe
+    try:
+        vix = _fetch_vix()
+    except Exception:
+        vix = 0.0
 
-    # SPY change: use supplied value or fetch fresh
-    spy = spy_day_chg if spy_day_chg is not None else _fetch_spy_chg()
+    # SPY change: use supplied value or fetch fresh — fail open on error
+    try:
+        spy = spy_day_chg if spy_day_chg is not None else _fetch_spy_chg()
+    except Exception:
+        spy = 0.0
 
     # Evaluate
     if vix > 0 and vix > VIX_THRESHOLD:

@@ -4,8 +4,30 @@ Respects paper_trading flag (logs only, no real alerts).
 Only fires when should_alert is True.
 """
 
+from datetime import date
 from alerts import send_alert
 import performance_tracker as pt
+
+# Idempotency store: (ticker, signal, date_str) → True
+# Prevents duplicate alerts from multiple watcher paths firing same signal on same day.
+_fired_today: dict[tuple, bool] = {}
+_fired_date: date | None = None
+
+
+def _is_duplicate(ticker: str, signal: str) -> bool:
+    """Return True if this (ticker, signal) already fired today."""
+    global _fired_today, _fired_date
+    today = date.today()
+    if _fired_date != today:          # new day — reset
+        _fired_today.clear()
+        _fired_date = today
+    return _fired_today.get((ticker, signal), False)
+
+
+def _mark_fired(ticker: str, signal: str):
+    global _fired_date
+    _fired_date = date.today()   # anchor date so _is_duplicate doesn't clear on same call
+    _fired_today[(ticker, signal)] = True
 
 
 def alert_node(state: dict) -> dict:
@@ -16,9 +38,14 @@ def alert_node(state: dict) -> dict:
     ticker        = state["ticker"]
     price         = state.get("current_price", 0.0)
 
-    # Suppress duplicate alert if ticker already has an active position
+    # Suppress duplicate BUY — position already open
     if state.get("already_alerted") and signal == "BUY":
         print(f"🔕 [AlertAgent] {ticker} — duplicate BUY suppressed (already in active position)")
+        return {**state, "alert_sent": False}
+
+    # Idempotency gate — same signal already fired today from any watcher path
+    if signal in ("BUY", "SELL") and _is_duplicate(ticker, signal):
+        print(f"🔕 [AlertAgent] {ticker} {signal} — idempotency gate (already fired today)")
         return {**state, "alert_sent": False}
 
     if not should_alert:
@@ -70,7 +97,8 @@ def alert_node(state: dict) -> dict:
         )
         if sent:
             print("✅ [AlertAgent] Delivered via WhatsApp + Push")
-            pt.record_signal(state)   # log to performance tracker
+            _mark_fired(ticker, signal)   # idempotency
+            pt.record_signal(state)       # log to performance tracker
         else:
             print("⚠️  [AlertAgent] Delivery failed (check Twilio/Pushover config)")
         return {**state, "alert_sent": sent}
