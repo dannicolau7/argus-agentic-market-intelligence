@@ -88,6 +88,9 @@ def _fetch_stocktwits(ticker: str) -> tuple:
             timeout=10,
             headers={"User-Agent": "argus/1.0"},
         )
+        if r.status_code == 403:
+            # StockTwits public API now requires authentication — suppress silently
+            return "NEUTRAL", 50, 0, 0, 0, {"velocity": 1.0, "label": "API blocked (403)"}
         if r.status_code != 200 or not r.text.strip():
             return "NEUTRAL", 50, 0, 0, 0, {"velocity": 1.0, "label": "no data"}
         messages = r.json().get("messages", [])
@@ -255,12 +258,14 @@ def news_node(state: dict) -> dict:
     else:
         print(f"   📱 StockTwits: no posts found")
 
-    # 2. Collect headlines — Polygon news already in state + CNN RSS
+    # 2. Collect headlines — Polygon news already in state + RSS
     polygon_headlines = []
     for n in raw_news:
         t = n.get("title") or (n.get("content") or {}).get("title") or ""
         if t:
             polygon_headlines.append(t)
+    if polygon_headlines:
+        print(f"   📡 Polygon news: {len(polygon_headlines)} ticker-specific articles")
 
     market_headlines = _fetch_market_headlines(ticker)
     if market_headlines:
