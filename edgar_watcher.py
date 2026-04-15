@@ -38,7 +38,7 @@ EDGAR_FEED_URL = (
     "?action=getcurrent&type=8-K&dateb=&owner=include"
     "&count=40&search_text=&output=atom"
 )
-EDGAR_HEADERS  = {"User-Agent": "stock-ai-agent contact@example.com"}
+EDGAR_HEADERS  = {"User-Agent": "argus contact@example.com"}
 ATOM_NS        = "http://www.w3.org/2005/Atom"
 
 _edgar_seen: set = set()   # accession numbers already processed

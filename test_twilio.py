@@ -16,7 +16,7 @@ print(f'To: {to_number}')
 client = Client(account_sid, auth_token)
 
 message = client.messages.create(
-    body='Stock AI Agent - Test Alert! BUY BZAI $1.79 Zone: $1.75-$1.82 Target: $2.10 Stop: $1.65 Confidence: 72%',
+    body='Argus - Test Alert! BUY BZAI $1.79 Zone: $1.75-$1.82 Target: $2.10 Stop: $1.65 Confidence: 72%',
     messaging_service_sid=messaging_sid,
     to=to_number
 )

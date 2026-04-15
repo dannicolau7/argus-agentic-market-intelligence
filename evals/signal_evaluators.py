@@ -1,6 +1,6 @@
 """
 evals/signal_evaluators.py — LangSmith evaluator functions for the 4-layer
-scoring system used by stock-ai-agent.
+scoring system used by argus.
 
 Each evaluator takes (run, example) and returns:
   key     : metric name shown in LangSmith UI

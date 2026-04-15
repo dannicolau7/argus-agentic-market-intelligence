@@ -1,5 +1,5 @@
 """
-main.py — entry point for the Stock AI Agent.
+main.py — entry point for the Argus.
 
 Usage:
   python main.py                         # monitor TICKER from .env
@@ -38,7 +38,7 @@ import logger
 # ── CLI args ───────────────────────────────────────────────────────────────────
 
 def _parse_args():
-    p = argparse.ArgumentParser(description="Stock AI Agent")
+    p = argparse.ArgumentParser(description="Argus")
     p.add_argument("--ticker",   nargs="+", default=None,  help="One or more ticker symbols (e.g. --ticker BZAI AWRE)")
     p.add_argument("--interval", type=int, default=300, help="Scan interval seconds (default 300 = 5 min)")
     p.add_argument("--paper",    action="store_true",   help="Paper trading — no real SMS/push alerts")
@@ -284,7 +284,7 @@ async def _send_daily_report():
 
 async def monitoring_loop():
     mode = "📋 PAPER" if PAPER else "🔴 LIVE"
-    print(f"🚀 Stock AI Agent starting  [{mode}]  tickers={', '.join(TICKERS)}  interval={INTERVAL}s")
+    print(f"🚀 Argus starting  [{mode}]  tickers={', '.join(TICKERS)}  interval={INTERVAL}s")
     print(f"📊 Dashboard → http://localhost:{PORT}")
 
     # Print watchlist on startup
@@ -378,7 +378,7 @@ async def lifespan(app: FastAPI):
     task_reflection.cancel()
 
 
-app = FastAPI(title=f"Stock AI Agent — {TICKER}", lifespan=lifespan)
+app = FastAPI(title=f"Argus — {TICKER}", lifespan=lifespan)
 
 
 def _json_safe(value):

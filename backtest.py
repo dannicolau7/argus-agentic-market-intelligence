@@ -274,7 +274,7 @@ def run_backtest(ticker: str, days: int, forward: int = 5) -> None:
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description="Stock AI Agent — Backtester")
+    p = argparse.ArgumentParser(description="Argus — Backtester")
     p.add_argument("--ticker",  required=True,        help="Ticker symbol  e.g. BZAI")
     p.add_argument("--days",    type=int, default=30,  help="Days to backtest (default 30)")
     p.add_argument("--forward", type=int, default=5,   help="Bars to look forward for outcome (default 5)")

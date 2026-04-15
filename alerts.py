@@ -99,7 +99,7 @@ def send_alert(ticker: str, signal: str, price: float,
         horizon_line += f" — {horizon_reason}"
 
     message = (
-        f'Stock AI Agent - {emoji}\n'
+        f'Argus - {emoji}\n'
         f'Ticker:     {ticker} at ${price:.2f}\n'
         f'Horizon:    {horizon_line}\n'
         f'Entry zone: ${entry_low:.2f} – ${entry_high:.2f}\n'
@@ -112,7 +112,7 @@ def send_alert(ticker: str, signal: str, price: float,
     whatsapp_ok = send_whatsapp(message)
 
     if PUSHOVER_APP_TOKEN and PUSHOVER_APP_TOKEN != 'your_key_here':
-        send_push(f'Stock AI Agent - {signal} {ticker}', message)
+        send_push(f'Argus - {signal} {ticker}', message)
 
     return bool(whatsapp_ok)
 

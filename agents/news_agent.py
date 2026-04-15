@@ -71,7 +71,7 @@ def _fetch_stocktwits(ticker: str) -> tuple:
         r = requests.get(
             f"https://api.stocktwits.com/api/2/streams/symbol/{ticker}.json",
             timeout=10,
-            headers={"User-Agent": "stock-ai-agent/1.0"},
+            headers={"User-Agent": "argus/1.0"},
         )
         if r.status_code != 200 or not r.text.strip():
             return "NEUTRAL", 50, 0, 0, 0, {"velocity": 1.0, "label": "no data"}
@@ -103,7 +103,7 @@ def _fetch_stocktwits(ticker: str) -> tuple:
 # ── Reddit (extra signal, kept for small-cap chatter) ─────────────────────────
 
 SUBREDDITS = ["wallstreetbets", "stocks", "investing", "pennystocks"]
-REDDIT_HEADERS = {"User-Agent": "stock-ai-agent/1.0 (research tool)"}
+REDDIT_HEADERS = {"User-Agent": "argus/1.0 (research tool)"}
 
 
 def _fetch_reddit_headlines(ticker: str) -> list:
@@ -152,7 +152,7 @@ def _fetch_market_headlines(ticker: str) -> list:
     for feed_url in feeds:
         try:
             r = requests.get(feed_url, timeout=10,
-                             headers={"User-Agent": "stock-ai-agent/1.0"},
+                             headers={"User-Agent": "argus/1.0"},
                              verify=True)
             if r.status_code != 200:
                 continue

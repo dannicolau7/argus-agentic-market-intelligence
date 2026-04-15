@@ -15,7 +15,7 @@ print(f'Sending WhatsApp to: {to_number}')
 client = Client(account_sid, auth_token)
 
 message = client.messages.create(
-    body='Stock AI Agent - WhatsApp Test! BUY BZAI $1.79 Zone: $1.75-$1.82 Target: $2.10 Stop: $1.65 Confidence: 72%',
+    body='Argus - WhatsApp Test! BUY BZAI $1.79 Zone: $1.75-$1.82 Target: $2.10 Stop: $1.65 Confidence: 72%',
     from_=from_number,
     to=to_number
 )

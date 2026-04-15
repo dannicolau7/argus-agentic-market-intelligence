@@ -31,4 +31,4 @@ SPY_DROP_THRESHOLD = float(os.getenv("SPY_DROP_THRESHOLD", "-1.5"))
 # No explicit SDK calls needed; LangGraph picks them up on import.
 LANGCHAIN_TRACING_V2 = os.getenv("LANGCHAIN_TRACING_V2", "false")
 LANGCHAIN_API_KEY    = os.getenv("LANGCHAIN_API_KEY", "")
-LANGCHAIN_PROJECT    = os.getenv("LANGCHAIN_PROJECT", "stock-ai-agent")
+LANGCHAIN_PROJECT    = os.getenv("LANGCHAIN_PROJECT", "argus")

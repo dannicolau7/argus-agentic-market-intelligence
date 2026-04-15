@@ -232,7 +232,7 @@ async def _send_good_night(paper: bool, daily_log: list):
     today = _today()
     sigs  = [e for e in daily_log if e.get("timestamp", "")[:10] == today]
     msg   = (
-        f"🌙 Good night! Stock AI Agent shutting down.\n\n"
+        f"🌙 Good night! Argus shutting down.\n\n"
         f"Today's summary:\n"
         f"- Signals fired: {len(sigs)}\n"
         f"- Scans completed: {sum(1 for v in _fired_today.values() if v == today)}\n\n"

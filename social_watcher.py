@@ -60,7 +60,7 @@ def _fetch_congress_trades() -> list[dict]:
         r = requests.get(
             "https://www.quiverquant.com/sources/congresstrading",
             timeout=15,
-            headers={"User-Agent": "stock-ai-agent/3.0 (market research)"},
+            headers={"User-Agent": "argus/3.0 (market research)"},
         )
         if r.status_code == 200:
             data = r.json()
@@ -165,7 +165,7 @@ def _fetch_trending_tickers() -> list[dict]:
         r = requests.get(
             "https://api.stocktwits.com/api/2/trending/symbols.json",
             timeout=10,
-            headers={"User-Agent": "stock-ai-agent/3.0"},
+            headers={"User-Agent": "argus/3.0"},
         )
         if r.status_code != 200:
             return []

@@ -1,8 +1,8 @@
-# Stock AI Agent
+# Argus
 
-> AI-powered stock monitoring system that combines three discovery engines, layered technical scoring, chart pattern recognition, news-driven catalyst detection, and Claude AI to generate real-time BUY / SELL / HOLD signals with WhatsApp alerts and a live trading dashboard.
+> Autonomous multi-agent stock intelligence system. 15 specialized agents run 24/7 — watching geopolitics, macro regimes, earnings calendars, market breadth, social flow, SEC filings, and price action — then synthesize everything into real-time BUY / SELL / HOLD signals. Self-improving: learns from every trade outcome and adjusts its own confidence thresholds daily.
 
-**Version:** v3.0 &nbsp;|&nbsp; **Status:** Active Development
+**Version:** v4.0 &nbsp;|&nbsp; **Status:** Active Development
 
 ---
 
@@ -10,7 +10,7 @@
 
 ### What it does
 
-Stock AI Agent runs three independent discovery systems simultaneously to ensure no opportunity is missed — whether you already know the ticker or not.
+Argus runs 15 background agents simultaneously to ensure no opportunity is missed — whether from your watchlist, macro rotation, news catalysts, or autonomous discovery.
 
 #### Discovery Engine 1 — Watchlist Monitor (every 5 minutes, market hours)
 
@@ -82,51 +82,57 @@ Monitors news for **all** US stocks — not just your watchlist — by polling t
 ## 3. Project Structure
 
 ```
-stock-ai-agent/
+argus/
 │
-├── main.py                  # Entry point — three async loops, FastAPI server, market hours
-├── config.py                # Loads all API keys from .env via python-dotenv
-├── graph.py                 # Builds and compiles the LangGraph pipeline
-├── analyzer.py              # Calls Claude API with full market context → structured signal + horizon
-├── polygon_feed.py          # Polygon.io + yfinance data layer (bars, price, news)
-├── alerts.py                # Twilio WhatsApp + Pushover senders
-├── logger.py                # Appends every BUY/SELL signal to signals_log.csv
-├── market_scanner.py        # Morning scanner — scans ~6k stocks, picks best of day
-├── news_watcher.py          # 24/7 news-driven stock discovery loop
-├── scheduler.py             # Daily event scheduler (11 timed events, 3 AM – 11 PM)
-├── circuit_breaker.py       # VIX + SPY circuit breaker — 15-min cached safety check
-├── pattern_detector.py      # Algorithmic chart pattern detection (5 patterns)
-├── backtester.py            # Walk-forward rule-based backtester — no Claude API
-├── premarket_scanner.py     # 8:30 AM pre-market gap scanner (yfinance prepost=True)
-├── self_learner.py          # Signal win-rate tracker — learns from past picks
-├── watchlist_manager.py     # Persist tickers to watchlist.json between sessions
-├── watchlist.json           # Saved ticker watchlist
-├── quick_check.py           # Instant price + news snapshot for any ticker(s)
-├── requirements.txt         # Python dependencies
-├── .env                     # API keys (gitignored)
-├── .env.example             # Template for .env setup
+├── main.py                    # Entry point — 15 async agent tasks, FastAPI server
+├── config.py                  # API keys from .env
+├── graph.py                   # LangGraph pipeline (fetch → news → tech → decide → alert)
+├── analyzer.py                # Claude Sonnet signal analysis with full world context
+├── world_context.py           # Thread-safe shared state — all agents write here
+├── polygon_feed.py            # Polygon.io + yfinance data layer
+├── alerts.py                  # Twilio WhatsApp + Pushover senders
+├── logger.py                  # Signals log (CSV)
+├── watchlist_manager.py       # Persist tickers to watchlist.json
+├── circuit_breaker.py         # VIX + SPY safety gate
+├── pattern_detector.py        # Chart pattern detection (5 patterns)
+├── market_scanner.py          # Morning scan — ~6k stocks → best of day
+├── scheduler.py               # Daily event scheduler (3 AM – 11 PM)
+├── quick_check.py             # Instant snapshot for any ticker
+│
+├── ── Intelligence Agents (always-on background loops) ──
+├── geo_watcher.py             # Geopolitical RSS → sector bias (every 30min)
+├── macro_watcher.py           # Yields, VIX, DXY, oil, gold → regime (every 60min)
+├── earnings_watcher.py        # Earnings calendar → catalysts + beat rates (every 4h)
+├── breadth_watcher.py         # 11 sectors vs 20d MA → market health (every 30min)
+├── social_watcher.py          # StockTwits, Congress trades, unusual options (every 60min)
+├── news_watcher.py            # Polygon + Yahoo Finance news → pipeline trigger (every 90s)
+├── spike_watcher.py           # Price + volume spike detection on ~200 tickers (every 60s)
+├── edgar_watcher.py           # SEC 8-K RSS → filing catalyst detection (every 60s)
+│
+├── ── Agentic Feedback Loop ──
+├── performance_tracker.py     # Logs every alert; checks 1d/3d/7d outcomes (SQLite)
+├── portfolio_agent.py         # Open position monitor; fires EXIT alerts (every 5min)
+├── reflection_agent.py        # Daily 4:15 PM review; adjusts confidence thresholds
+├── discovery_agent.py         # Macro-driven sector discovery; builds dynamic scan list (every 4h)
 │
 ├── agents/
-│   ├── data_agent.py        # Node 1 — fetches price, bars, volume, news
-│   ├── news_agent.py        # Node 2 — StockTwits sentiment + news classification
-│   ├── tech_agent.py        # Node 3 — RSI, MACD, EMA stack, ATR, volume, patterns
-│   ├── decision_agent.py    # Node 4 — calls analyzer.py, gates on confidence >= 65
-│   └── alert_agent.py       # Node 5 — fires WhatsApp + push; suppresses duplicate BUY alerts
+│   ├── data_agent.py          # Node 1 — price, bars, volume, news
+│   ├── news_agent.py          # Node 2 — sentiment + news classification
+│   ├── tech_agent.py          # Node 3 — RSI, MACD, EMA stack, ATR, patterns
+│   ├── decision_agent.py      # Node 4 — Claude signal + adaptive confidence threshold
+│   └── alert_agent.py         # Node 5 — WhatsApp + push + performance logging
 │
-├── features/
-│   ├── __init__.py
-│   ├── relative_strength.py # Multi-horizon RS vs SPY + QQQ (1d / 5d / 20d composite)
-│   └── news_classifier.py   # Phrase-level headline categorisation + score adjustments
+├── data/
+│   ├── performance.db         # SQLite — signal history + outcomes
+│   ├── learnings.json         # Reflection agent accumulated insights
+│   └── discovery_log.jsonl    # Discovery agent history
 │
-├── setups/
-│   ├── __init__.py          # detect_and_score() — scores all matching setups, returns best
-│   ├── gap_and_go.py        # Gap ≥ 3% + RVOL ≥ 3x + RSI ≤ 67
-│   ├── breakout.py          # Price ≥ 20-day high + RVOL ≥ 2x + RSI 50–67
-│   ├── first_pullback.py    # EMA9 > EMA21 > EMA50, price near EMA9, RSI 38–55
-│   └── oversold_bounce.py   # RSI ≤ 35 + RVOL ≥ 2x + price near 20-bar support
-│
-└── dashboard/
-    └── index.html           # Live trading terminal — 5 tabs: Signal, History, News, Watchlist, Performance
+├── setups/                    # Setup detectors (gap-and-go, breakout, pullback, bounce)
+├── features/                  # Relative strength, news classifier
+├── dashboard/index.html       # Live terminal — Signal, History, News, Watchlist, Portfolio
+├── requirements.txt
+├── .env / .env.example
+└── watchlist.json
 ```
 
 ### Agent Pipeline Flow

@@ -58,7 +58,7 @@ def _parse_feed(url: str, label: str) -> list:
         r = requests.get(
             url,
             timeout=15,
-            headers={"User-Agent": "stock-ai-agent/3.0 (market research)"},
+            headers={"User-Agent": "argus/3.0 (market research)"},
         )
         if r.status_code != 200:
             return []
