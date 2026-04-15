@@ -1,18 +1,22 @@
 """
 graph.py — builds and compiles the full LangGraph pipeline.
-Flow: fetch_data → analyze_news → analyze_tech → decide → alert
+Flow: fetch_data → analyze_news → analyze_tech → decide
+      → assess_risk → size_position → check_execution → alert
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TypedDict
 
 from langgraph.graph import StateGraph, END
 
-from agents.data_agent     import data_node
-from agents.news_agent     import news_node
-from agents.tech_agent     import tech_node
-from agents.decision_agent import decision_node
-from agents.alert_agent    import alert_node
+from agents.data_agent      import data_node
+from agents.news_agent      import news_node
+from agents.tech_agent      import tech_node
+from agents.decision_agent  import decision_node
+from agents.risk_agent      import risk_node
+from agents.sizing_agent    import sizing_node
+from agents.execution_agent import execution_node
+from agents.alert_agent     import alert_node
 
 
 # ── Shared state schema ────────────────────────────────────────────────────────
@@ -91,6 +95,25 @@ class AgentState(TypedDict):
     # Set True when pipeline is triggered by a news/spike/EDGAR event (lowers threshold to 55)
     news_triggered: bool
 
+    # Risk node
+    risk_approved:    bool
+    risk_veto_reason: str
+    risk_multiplier:  float
+    risk_warnings:    list
+
+    # Sizing node
+    position_size_pct: float
+    position_size_usd: float
+    max_shares:        int
+    risk_dollars:      float
+    scale_in:          bool
+    size_reasoning:    str
+
+    # Execution node
+    executable:        bool
+    execution_reason:  str
+    order_type:        str
+
     # Alert node
     alert_sent: bool
 
@@ -100,18 +123,24 @@ class AgentState(TypedDict):
 def build_graph():
     g = StateGraph(AgentState)
 
-    g.add_node("fetch_data",   data_node)
-    g.add_node("analyze_news", news_node)
-    g.add_node("analyze_tech", tech_node)
-    g.add_node("decide",       decision_node)
-    g.add_node("alert",        alert_node)
+    g.add_node("fetch_data",      data_node)
+    g.add_node("analyze_news",    news_node)
+    g.add_node("analyze_tech",    tech_node)
+    g.add_node("decide",          decision_node)
+    g.add_node("assess_risk",     risk_node)
+    g.add_node("size_position",   sizing_node)
+    g.add_node("check_execution", execution_node)
+    g.add_node("alert",           alert_node)
 
     g.set_entry_point("fetch_data")
-    g.add_edge("fetch_data",   "analyze_news")
-    g.add_edge("analyze_news", "analyze_tech")
-    g.add_edge("analyze_tech", "decide")
-    g.add_edge("decide",       "alert")
-    g.add_edge("alert",        END)
+    g.add_edge("fetch_data",      "analyze_news")
+    g.add_edge("analyze_news",    "analyze_tech")
+    g.add_edge("analyze_tech",    "decide")
+    g.add_edge("decide",          "assess_risk")
+    g.add_edge("assess_risk",     "size_position")
+    g.add_edge("size_position",   "check_execution")
+    g.add_edge("check_execution", "alert")
+    g.add_edge("alert",           END)
 
     return g.compile()
 
@@ -124,7 +153,7 @@ GRAPH = build_graph()
 def make_initial_state(ticker: str, paper_trading: bool = False) -> AgentState:
     return AgentState(
         ticker=ticker,
-        timestamp=datetime.now().isoformat(),
+        timestamp=datetime.now(timezone.utc).isoformat(),
         paper_trading=paper_trading,
         current_price=0.0,
         prev_close=0.0,
@@ -176,5 +205,21 @@ def make_initial_state(ticker: str, paper_trading: bool = False) -> AgentState:
         horizon_reasoning="",
         already_alerted=False,
         news_triggered=False,
+        # Risk node
+        risk_approved=True,
+        risk_veto_reason="",
+        risk_multiplier=1.0,
+        risk_warnings=[],
+        # Sizing node
+        position_size_pct=0.0,
+        position_size_usd=0.0,
+        max_shares=0,
+        risk_dollars=0.0,
+        scale_in=False,
+        size_reasoning="",
+        # Execution node
+        executable=False,
+        execution_reason="",
+        order_type="NONE",
         alert_sent=False,
     )
