@@ -19,6 +19,31 @@ import world_context as wctx
 _client = None
 
 
+def _enforce_target_spacing(targets: list, price: float, min_gap: float = 0.03) -> list:
+    """
+    Ensure T1, T2, T3 are strictly increasing with at least min_gap (3%) between each.
+    If Claude returns duplicates or inverted values, rebuild T2/T3 from T1.
+    """
+    if not targets:
+        return [round(price * 1.05, 4), round(price * 1.10, 4), round(price * 1.20, 4)]
+
+    t1 = targets[0] if targets[0] > price else price * 1.05
+
+    # T2: must be at least 3% above T1
+    if len(targets) > 1 and targets[1] >= t1 * (1 + min_gap):
+        t2 = targets[1]
+    else:
+        t2 = round(t1 * (1 + max(min_gap, 0.08)), 4)   # default +8% from T1
+
+    # T3: must be at least 3% above T2
+    if len(targets) > 2 and targets[2] >= t2 * (1 + min_gap):
+        t3 = targets[2]
+    else:
+        t3 = round(t2 * (1 + max(min_gap, 0.10)), 4)   # default +10% from T2
+
+    return [round(t1, 4), round(t2, 4), round(t3, 4)]
+
+
 def _get_client() -> anthropic.Anthropic:
     global _client
     if _client is None:
@@ -298,8 +323,21 @@ Respond ONLY with this exact JSON (no markdown fences):
         result          = json.loads(text)
         signal          = str(result.get("signal", "HOLD")).upper()
         confidence      = max(0, min(100, int(result.get("confidence", 0))))
-        targets         = [float(t) for t in result.get("targets", [])]
+        raw_targets     = [float(t) for t in result.get("targets", [])]
         stop_loss       = float(result.get("stop_loss", round(price * 0.95, 4)))
+
+        # Enforce T1 < T2 < T3 with minimum 3% spacing between each level.
+        # Claude sometimes returns identical values — this fixes duplicates.
+        targets = _enforce_target_spacing(raw_targets, price)
+
+        # ATR-based stop floor: stop can't be tighter than 1× ATR below entry.
+        # Prevents stops from being blown on normal intraday noise for volatile stocks.
+        atr = context.get("atr", 0.0)
+        if atr > 0:
+            min_stop = round(price - atr, 4)
+            if stop_loss > min_stop:
+                print(f"⚠️  [Analyzer] Stop widened: ${stop_loss:.4f} → ${min_stop:.4f} (1× ATR floor)")
+                stop_loss = min_stop
         trade_horizon   = str(result.get("trade_horizon", "swing")).lower()
         horizon_reason  = str(result.get("horizon_reasoning", ""))
         if trade_horizon not in ("intraday", "swing", "position"):
@@ -309,6 +347,17 @@ Respond ONLY with this exact JSON (no markdown fences):
         if confidence > earnings_cap:
             confidence = earnings_cap
             print(f"⚠️  [Analyzer] Earnings cap applied → capped at {earnings_cap}")
+
+        # Hard-kill: after-hours timing_mult == 0 suppresses swing BUYs entirely.
+        # news_triggered signals (spike/edgar/yf-news) are exempt — they need rapid response.
+        if signal == "BUY" and t_mult == 0.0 and not context.get("news_triggered"):
+            print(f"🔕 [Analyzer] After-hours BUY suppressed (timing_mult=0, not news-triggered)")
+            signal     = "HOLD"
+            confidence = 0
+            result["reasoning"] = (
+                "Signal suppressed: after-hours swing BUY. "
+                "Re-evaluates at market open. Set up alerts for the open."
+            )
 
         # Circuit breaker — suppress BUY on extreme fear / market selloff
         if signal == "BUY":

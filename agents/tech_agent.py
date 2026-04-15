@@ -258,7 +258,9 @@ def _catalyst_timing_multiplier() -> dict:
     elif late <= now < close:
         return {"multiplier": 0.7, "window": "last hour ⚠️"}
     else:
-        return {"multiplier": 0.6, "window": "pre/after market"}
+        # After-hours / pre-market: multiplier = 0 so swing BUYs are killed entirely.
+        # News-triggered signals (spike/edgar/yf-news) bypass this via news_triggered flag.
+        return {"multiplier": 0.0, "window": "after hours 🔕"}
 
 
 def _premarket_gap(bars: list, premarket_price: float = 0.0) -> dict:

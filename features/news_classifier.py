@@ -37,6 +37,9 @@ CATEGORIES: list[tuple[str, list[str]]] = [
         "at-the-market offering", "prospectus supplement",
         "underwritten public offering", "direct offering",
         "sells shares", "share sale", "common stock offering",
+        "pricing of", "prices offering", "upsized offering",
+        "announces pricing", "priced its", "million shares",
+        "shelf registration", "warrant exercise",
     ]),
     ("fda_rejection", [
         "fda rejects", "fda refuses", "fda declines",
