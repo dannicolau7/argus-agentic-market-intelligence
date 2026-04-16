@@ -2,21 +2,58 @@
 graph.py — builds and compiles the full LangGraph pipeline.
 Flow: fetch_data → analyze_news → analyze_tech → decide
       → assess_risk → size_position → check_execution → alert
+
+Includes a lightweight audit runner for validating whether each stage
+materially changes the trade state.
 """
 
 from datetime import datetime, timezone
 from typing import TypedDict
+import copy
 
 from langgraph.graph import StateGraph, END
 
-from agents.data_agent      import data_node
-from agents.news_agent      import news_node
-from agents.tech_agent      import tech_node
-from agents.decision_agent  import decision_node
-from agents.risk_agent      import risk_node
-from agents.sizing_agent    import sizing_node
-from agents.execution_agent import execution_node
-from agents.alert_agent     import alert_node
+import concurrent.futures
+
+from agents.data_agent         import data_node
+from agents.news_agent         import news_node
+from agents.tech_agent         import tech_node
+from agents.signal_aggregator  import aggregator_node
+from agents.decision_agent     import decision_node
+from agents.decision_validator import validator_node
+from agents.risk_agent         import risk_node
+from agents.sizing_agent       import sizing_node
+from agents.execution_agent    import execution_node
+from agents.alert_agent        import alert_node
+
+
+# ── Parallel news + tech node ──────────────────────────────────────────────────
+# Runs news_node and tech_node simultaneously in threads, then merges their
+# unique outputs. Cuts data-collection wall-time from ~30s to ~10s.
+
+_NEWS_KEYS = frozenset({
+    "news_sentiment", "sentiment_score", "news_summary", "social_velocity",
+})
+_TECH_KEYS = frozenset({
+    "rsi", "intraday_rsi", "macd", "bollinger", "atr", "support", "resistance",
+    "sr_levels", "volume_spike", "volume_spike_ratio", "vwap", "obv", "smart_money",
+    "ema_stack", "float_rotation", "sector_momentum", "timing", "gap_info",
+    "market_regime", "relative_strength", "score_breakdown", "patterns",
+})
+
+
+def parallel_analyze_node(state: dict) -> dict:
+    """Runs news_node and tech_node concurrently, then merges their outputs."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as exe:
+        fut_news = exe.submit(news_node, dict(state))
+        fut_tech = exe.submit(tech_node, dict(state))
+        news_result = fut_news.result()
+        tech_result = fut_tech.result()
+
+    # Only pull keys each node is responsible for — avoids stale-state overwrites
+    news_delta = {k: v for k, v in news_result.items() if k in _NEWS_KEYS}
+    tech_delta = {k: v for k, v in tech_result.items() if k in _TECH_KEYS}
+    return {**state, **news_delta, **tech_delta}
 
 
 # ── Shared state schema ────────────────────────────────────────────────────────
@@ -28,8 +65,9 @@ class AgentState(TypedDict):
     paper_trading: bool
 
     # Data node
-    current_price:  float
-    prev_close:     float
+    current_price:    float
+    price_fetched_at: str
+    prev_close:       float
     volume:         float
     avg_volume:     float
     volume_ratio:   float
@@ -117,7 +155,127 @@ class AgentState(TypedDict):
     order_type:        str
 
     # Alert node
-    alert_sent: bool
+    alert_sent:        bool
+    alert_reason_code: str
+
+    # Decision audit — carried through pipeline for traceability
+    model_signal:     str
+    model_confidence: float
+    threshold_used:   int
+    decision_delta:   str
+
+    # Convenience price/zone aliases (set by decision_node, fixed by validator)
+    price:      float
+    entry_low:  float
+    entry_high: float
+    stop_pct:   float
+
+    # Signal aggregator
+    has_edgar_filing:   bool
+    bullish_signals:    list
+    bearish_signals:    list
+    agreement_score:    float
+    consensus:          str
+    signal_count_bull:  int
+    signal_count_bear:  int
+    skip_claude:        bool
+    skip_reason:        str
+
+    # Decision validator
+    final_signal:        str
+    validator_passed:    bool
+    validator_overrides: list
+
+    # Extra Claude fields
+    main_risk:     str
+    top_3_signals: list
+
+
+# ── Audit helpers ───────────────────────────────────────────────────────────────
+
+PIPELINE_NODES = [
+    ("fetch_data",        data_node),
+    ("parallel_analyze",  parallel_analyze_node),   # news + tech concurrently
+    ("aggregate_signals", aggregator_node),
+    ("decide",            decision_node),
+    ("validate_decision", validator_node),
+    ("assess_risk",       risk_node),
+    ("size_position",     sizing_node),
+    ("check_execution",   execution_node),
+    ("alert",             alert_node),
+]
+
+
+def _audit_snapshot(state: dict) -> dict:
+    return {
+        "ticker": state.get("ticker"),
+        "current_price": state.get("current_price"),
+        "news_sentiment": state.get("news_sentiment"),
+        "sentiment_score": state.get("sentiment_score"),
+        "rsi": state.get("rsi"),
+        "volume_spike_ratio": state.get("volume_spike_ratio"),
+        "score_breakdown": copy.deepcopy(state.get("score_breakdown")),
+        "signal": state.get("signal"),
+        "confidence": state.get("confidence"),
+        "entry_zone": state.get("entry_zone"),
+        "targets": copy.deepcopy(state.get("targets")),
+        "stop_loss": state.get("stop_loss"),
+        "should_alert": state.get("should_alert"),
+        "risk_approved": state.get("risk_approved"),
+        "risk_veto_reason": state.get("risk_veto_reason"),
+        "risk_multiplier": state.get("risk_multiplier"),
+        "risk_warnings": copy.deepcopy(state.get("risk_warnings")),
+        "position_size_pct": state.get("position_size_pct"),
+        "position_size_usd": state.get("position_size_usd"),
+        "max_shares": state.get("max_shares"),
+        "scale_in": state.get("scale_in"),
+        "executable": state.get("executable"),
+        "execution_reason": state.get("execution_reason"),
+        "order_type": state.get("order_type"),
+        "alert_sent": state.get("alert_sent"),
+        "alert_reason_code": state.get("alert_reason_code"),
+        "model_signal": state.get("model_signal"),
+        "model_confidence": state.get("model_confidence"),
+        "threshold_used": state.get("threshold_used"),
+        "decision_delta": state.get("decision_delta"),
+    }
+
+
+def _diff_snapshots(before: dict, after: dict) -> dict:
+    changed = {}
+    for key, value in after.items():
+        if before.get(key) != value:
+            changed[key] = {"before": before.get(key), "after": value}
+    return changed
+
+
+def run_pipeline_audit(initial_state: dict) -> dict:
+    """
+    Run the pipeline sequentially and capture state deltas after each node.
+
+    This provides a concrete answer to "is the agentic part working?" by
+    showing whether each stage contributes meaningful changes.
+    """
+    state = copy.deepcopy(initial_state)
+    initial = _audit_snapshot(state)
+    steps = []
+
+    for step_name, node in PIPELINE_NODES:
+        before = _audit_snapshot(state)
+        state = node(state)
+        after = _audit_snapshot(state)
+        steps.append({
+            "step": step_name,
+            "changed": _diff_snapshots(before, after),
+            "snapshot": after,
+        })
+
+    return {
+        "initial": initial,
+        "steps": steps,
+        "final": _audit_snapshot(state),
+        "material_steps": [step["step"] for step in steps if step["changed"]],
+    }
 
 
 # ── Graph factory ──────────────────────────────────────────────────────────────
@@ -125,24 +283,26 @@ class AgentState(TypedDict):
 def build_graph():
     g = StateGraph(AgentState)
 
-    g.add_node("fetch_data",      data_node)
-    g.add_node("analyze_news",    news_node)
-    g.add_node("analyze_tech",    tech_node)
-    g.add_node("decide",          decision_node)
-    g.add_node("assess_risk",     risk_node)
-    g.add_node("size_position",   sizing_node)
-    g.add_node("check_execution", execution_node)
-    g.add_node("alert",           alert_node)
+    g.add_node("fetch_data",        data_node)
+    g.add_node("parallel_analyze",  parallel_analyze_node)
+    g.add_node("aggregate_signals", aggregator_node)
+    g.add_node("decide",            decision_node)
+    g.add_node("validate_decision", validator_node)
+    g.add_node("assess_risk",       risk_node)
+    g.add_node("size_position",     sizing_node)
+    g.add_node("check_execution",   execution_node)
+    g.add_node("alert",             alert_node)
 
     g.set_entry_point("fetch_data")
-    g.add_edge("fetch_data",      "analyze_news")
-    g.add_edge("analyze_news",    "analyze_tech")
-    g.add_edge("analyze_tech",    "decide")
-    g.add_edge("decide",          "assess_risk")
-    g.add_edge("assess_risk",     "size_position")
-    g.add_edge("size_position",   "check_execution")
-    g.add_edge("check_execution", "alert")
-    g.add_edge("alert",           END)
+    g.add_edge("fetch_data",        "parallel_analyze")
+    g.add_edge("parallel_analyze",  "aggregate_signals")
+    g.add_edge("aggregate_signals", "decide")
+    g.add_edge("decide",            "validate_decision")
+    g.add_edge("validate_decision", "assess_risk")
+    g.add_edge("assess_risk",       "size_position")
+    g.add_edge("size_position",     "check_execution")
+    g.add_edge("check_execution",   "alert")
+    g.add_edge("alert",             END)
 
     return g.compile()
 
@@ -158,6 +318,7 @@ def make_initial_state(ticker: str, paper_trading: bool = False) -> AgentState:
         timestamp=datetime.now(timezone.utc).isoformat(),
         paper_trading=paper_trading,
         current_price=0.0,
+        price_fetched_at="",
         prev_close=0.0,
         volume=0.0,
         avg_volume=0.0,
@@ -226,4 +387,31 @@ def make_initial_state(ticker: str, paper_trading: bool = False) -> AgentState:
         execution_reason="",
         order_type="NONE",
         alert_sent=False,
+        alert_reason_code="not_evaluated",
+        model_signal="HOLD",
+        model_confidence=0.0,
+        threshold_used=0,
+        decision_delta="",
+        # Convenience aliases
+        price=0.0,
+        entry_low=0.0,
+        entry_high=0.0,
+        stop_pct=0.0,
+        # Signal aggregator
+        has_edgar_filing=False,
+        bullish_signals=[],
+        bearish_signals=[],
+        agreement_score=0.0,
+        consensus="NEUTRAL",
+        signal_count_bull=0,
+        signal_count_bear=0,
+        skip_claude=False,
+        skip_reason="",
+        # Decision validator
+        final_signal="HOLD",
+        validator_passed=False,
+        validator_overrides=[],
+        # Extra Claude fields
+        main_risk="",
+        top_3_signals=[],
     )

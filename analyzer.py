@@ -53,6 +53,13 @@ def _get_client() -> anthropic.Anthropic:
 
 @traceable(name="claude_analyzer", tags=["claude", "llm"])
 def analyze_market(context: dict) -> dict:
+    # ── Skip-Claude fast path (aggregator disagreement) ────────────────────────
+    if context.get("skip_claude"):
+        skip_reason = context.get("skip_reason", "agents disagree")
+        print(f"⏭️  [Analyzer] Skipping Claude — {skip_reason}")
+        price = context.get("current_price", 0.0)
+        return _fallback(price)
+
     ticker         = context.get("ticker", "UNKNOWN")
     price          = context.get("current_price", 0.0)
     prev_close     = context.get("prev_close", price)
@@ -189,115 +196,139 @@ def analyze_market(context: dict) -> dict:
         f"resist ${sr_levels.get('resistance_20d',0):.4f}"
     ) if sr_levels else f"  Support ${support:.4f}  Resistance ${resistance:.4f}"
 
-    prompt = f"""You are an elite quantitative momentum trader with a unique multi-signal scoring system.
-Analyze {ticker} and return a precise trading recommendation.
+    # ── Aggregator consensus section ───────────────────────────────────────────
+    bull_sigs    = context.get("bullish_signals", [])
+    bear_sigs    = context.get("bearish_signals", [])
+    agreement    = context.get("agreement_score", 0.0)
+    consensus    = context.get("consensus", "NEUTRAL")
 
-=== MARKET CONTEXT ===
+    def _sig_lines(sigs: list) -> str:
+        return "\n".join(f"  • {n} (weight {w:.2f})" for n, w in sigs) or "  (none)"
+
+    # Conflict signals (opposite direction signals when consensus leans one way)
+    conflict_lines = ""
+    if consensus == "BULLISH" and bear_sigs:
+        conflict_lines = "\n".join(f"  ⚠️  {n} (weight {w:.2f})" for n, w in bear_sigs)
+    elif consensus == "BEARISH" and bull_sigs:
+        conflict_lines = "\n".join(f"  ⚠️  {n} (weight {w:.2f})" for n, w in bull_sigs)
+
+    # Strongest single signal
+    all_dominant = bull_sigs if consensus in ("BULLISH", "NEUTRAL") else bear_sigs
+    top_sig_name = max(all_dominant, key=lambda x: x[1])[0] if all_dominant else "none"
+
+    # World context
+    try:
+        ctx = wctx.get()
+        macro_regime = ctx.get("macro", {}).get("regime", "UNKNOWN")
+        breadth_health = ctx.get("breadth", {}).get("health", "UNKNOWN")
+        vix_str = str(ctx.get("macro", {}).get("vix", "N/A"))
+    except Exception:
+        macro_regime   = market_regime.get("regime", "UNKNOWN")
+        breadth_health = "UNKNOWN"
+        vix_str        = "N/A"
+
+    # Catalyst line for prompt
+    news_catalyst_str = "No recent news"
+    if news_summary:
+        age_h = context.get("_news_age_cached", 999)
+        news_catalyst_str = f"{news_summary[:120]}"
+    has_edgar = bool(context.get("has_edgar_filing", False))
+    if has_edgar:
+        news_catalyst_str = f"EDGAR filing detected. {news_catalyst_str}"
+
+    prompt = f"""You are an elite quantitative momentum trader.
+The signal aggregator has already processed all data sources. Use its consensus as your starting point.
+
+=== SECTION 1 — CONSENSUS PICTURE ===
+Signal aggregator found:
+
+BULLISH signals ({len(bull_sigs)}):
+{_sig_lines(bull_sigs)}
+
+BEARISH signals ({len(bear_sigs)}):
+{_sig_lines(bear_sigs)}
+
+Agreement score: {agreement:.0f}% {consensus}
+Strongest signal: {top_sig_name}
+
+=== SECTION 2 — KEY CONFLICTS TO RESOLVE ===
+{"These signals conflict with the consensus and need your judgment:" if conflict_lines else "No significant conflicts — consensus is clean."}
+{conflict_lines if conflict_lines else ""}
+
+=== SECTION 3 — MARKET CONTEXT ===
 Market regime:  SPY {market_regime.get('regime','?')} (EMA5={market_regime.get('ema5',0):.2f} vs EMA20={market_regime.get('ema20',0):.2f})
 SPY today:      {market_regime.get('spy_day_chg',0):+.2f}%
+VIX:            {vix_str}
+Breadth:        {breadth_health}
+Macro bias:     {macro_regime}
 Relative str:   {ticker} {rel_str.get('label','n/a')}
-Pre-Market Gap: {gap_info.get('label', 'n/a')}
 {earnings_line}
-=== PRICE ACTION ===
-Price:          ${price:.4f}
-Prev Close:     ${prev_close:.4f}
-Day Change:     {day_change_pct:+.2f}%
+=== SECTION 4 — CATALYST CHECK ===
+News catalyst:   {news_catalyst_str}
+News sentiment:  {news_sentiment} ({sentiment_score}/100)
+Social velocity: {social_vel.get('label', 'n/a')}
+Volume confirm:  {vol_ratio:.1f}x average{'  🔥 SPIKE' if volume_spike else ''}
+Float rotation:  {float_label if float_label else 'low'}
 
-=== TECHNICAL INDICATORS ===
-RSI daily(14):  {rsi:.1f}{'  ⚠️ OVERBOUGHT' if rsi > 70 else '  ⚠️ OVERSOLD' if rsi < 30 else '  ✅ IDEAL (30-65)' if 30 <= rsi <= 65 else ''}
-RSI intraday:   {intra_rsi:.1f} (15-min bars)
-MACD Histogram: {macd.get('histogram', 0):+.6f}{'  🟢 BULLISH' if macd.get('histogram', 0) > 0 else '  🔴 BEARISH'}
+=== SUPPORTING TECHNICALS ===
+Price:          ${price:.4f}  (prev close ${prev_close:.4f}, day {day_change_pct:+.2f}%)
+RSI daily(14):  {rsi:.1f}{'  ⚠️ OVERBOUGHT' if rsi > 70 else '  ⚠️ OVERSOLD' if rsi < 30 else ''}
+RSI intraday:   {intra_rsi:.1f} (15-min)
+MACD Histogram: {macd.get('histogram', 0):+.6f}{'  🟢' if macd.get('histogram', 0) > 0 else '  🔴'}
 BB Position:    {bb_pos}  (bw={bb_bw:.4f})
 ATR(14):        ${atr:.4f}
-{vwap_line}{ema_line}OBV:            {obv:,.0f}
-Smart Money:    {smart_money}  ({'🟢 hidden accumulation' if smart_money == 'ACCUMULATION' else '🔴 hidden distribution' if smart_money == 'DISTRIBUTION' else 'aligned'})
-
-=== KEY LEVELS (MULTI-TIMEFRAME) ===
-{sr_str}
-
-=== VOLUME & FLOAT ===
-Volume ratio:   {vol_ratio:.1f}x avg{'  🔥 SPIKE' if volume_spike else ''}
-Float rotation: {float_label if float_label else 'low'}
-
-=== SECTOR & TIMING ===
+{vwap_line}{ema_line}Smart Money:    {smart_money}
+Pre-Market Gap: {gap_info.get('label', 'n/a')}
 Sector ETF ({sector_m.get('etf','SPY')}): {sector_m.get('change_pct', 0):+.2f}%  →  {sector_m.get('signal','NEUTRAL')}
 Market window:  {t_win}  (score multiplier ×{t_mult})
 
-=== MULTI-SOURCE SENTIMENT ===
-Combined score: {news_sentiment}  ({sentiment_score}/100)
-Social velocity:{social_vel.get('label', 'n/a')}
-Summary:        {news_summary}
+=== KEY S/R LEVELS ===
+{sr_str}
 
-=== UNIQUE SCORING FRAMEWORK (apply self-learned weights shown) ===
-Score each active signal, multiply by its weight, then apply timing multiplier:
-
-BULLISH signals:
-  MACD bullish histogram:           +{round(20*w_macd)} pts  (weight ×{w_macd})
-  RSI 30–50 bounce zone:            +{round(20*w_rsi_bounce)} pts  (weight ×{w_rsi_bounce})
-  RSI 50–65 momentum zone:          +{round(10*w_rsi_mom)} pts  (weight ×{w_rsi_mom})
-  Price above VWAP:                 +{round(20*w_vwap)} pts  (weight ×{w_vwap})
-  EMA stack BULLISH (9>21>50):      +{round(15*w_ema)} pts  (weight ×{w_ema})
-  Volume spike ≥2×:                 +{round(15*w_volume)} pts  (weight ×{w_volume})
-  BB oversold (below lower band):   +{round(15*w_bb)} pts  (weight ×{w_bb})
-  Smart money ACCUMULATION:         +{round(20*w_smd)} pts  (weight ×{w_smd})
-  Float rotation >50%:              +{round(20*w_float)} pts  (weight ×{w_float})
-  Sentiment BULLISH (≥60):          +{round(15*w_sentiment)} pts  (weight ×{w_sentiment})
-  Social velocity surging (≥3×):    +15 pts
-  Pre-market gap +2–10% (bullish):  +{round(10*w_gap)} pts  (weight ×{w_gap})
-  Sector momentum BULLISH:          +10 pts
-  Price near support (≤3%):         +{round(10*w_support)} pts  (weight ×{w_support})
-  Day change +2% to +8%:            +10 pts
-
-BEARISH / PENALTY signals:
-  MACD bearish histogram:           -{round(20*w_macd)} pts
-  RSI >70 overbought:               -20 pts
-  EMA stack BEARISH (9<21<50):      -{round(15*w_ema)} pts
-  Price below VWAP:                 -{round(15*w_vwap)} pts
-  Smart money DISTRIBUTION:         -{round(20*w_smd)} pts
-  Sentiment BEARISH (≤40):          -{round(15*w_sentiment)} pts
-  Pre-market gap >10% (fade risk):  -15 pts
-  Sector momentum BEARISH:          -10 pts
-  Day change >+10% (extended):      -10 pts
-  Float rotation >100% AND no news: -10 pts (manipulation risk)
-
-Apply timing multiplier ×{t_mult} to final score.
-
-=== DETECTED CHART PATTERNS ===
+=== CHART PATTERNS ===
 {patterns_str}
+
+=== PRE-COMPUTED SCORE ===
+{score_line}
 
 {wctx.build_prompt_section()}
 
-=== PRE-COMPUTED SCORE (validate and adjust if needed) ===
-{score_line}
+=== SELF-LEARNED SIGNAL WEIGHTS (reference) ===
+MACD ×{w_macd}  RSI-bounce ×{w_rsi_bounce}  RSI-mom ×{w_rsi_mom}  VWAP ×{w_vwap}
+EMA ×{w_ema}  Volume ×{w_volume}  BB ×{w_bb}  SmartMoney ×{w_smd}
+Float ×{w_float}  Sentiment ×{w_sentiment}  Gap ×{w_gap}  Support ×{w_support}
 
-IMPORTANT RULES:
-- If volume ratio < 0.5×, cap confidence at 60 (no conviction)
-- If earnings ≤{e_days} days away, cap confidence at {earnings_cap}
-- If market regime is BEAR and signal is BUY, reduce confidence by 15
-- Score ≥ 60 after timing → BUY, confidence 65–100
-- Score 30–59 → HOLD
-- Score < 30 or net negative → SELL or HOLD
-- Entry zone = tightest 5-day support to current price
-- Stop loss = 5-day support OR price − ATR, whichever is closer to price
-- T1 = nearest resistance, T2 = +8–10% from entry, T3 = +18–22% from entry
-- Risk/Reward must be ≥ 1.5:1 to issue a BUY
+=== SECTION 5 — THE QUESTION ===
+Given {agreement:.0f}% {consensus} consensus, should I BUY, SELL, or HOLD {ticker} at ${price:.4f}?
 
-TRADE HORIZON RULES (pick exactly one):
-- "intraday": RSI > 65 on daily (already extended), price at/above daily resistance, EMA stack mixed or bearish, pure intraday RVOL spike with no multi-day setup, or earnings ≤ 3 days away → take profits before the close
-- "swing": EMA stack BULLISH, MACD histogram just turned positive or strengthening, RSI 40–65 with room to run, price breaking out with volume, clear sector tailwind → 2–5 day hold, trail stop daily
-- "position": Major catalyst (earnings beat, FDA, partnership), RSI bouncing from deeply oversold (<35) on high volume, bullish alignment on daily AND weekly timeframe, strong sector rotation → week+ hold
+RULES:
+- Volume ratio < 0.5× → cap confidence at 60
+- Earnings ≤{e_days} days away → cap confidence at {earnings_cap}
+- Market regime BEAR + BUY signal → reduce confidence by 15
+- Risk/Reward must be ≥ 1.2:1 for a BUY
+
+TRADE HORIZON (pick exactly one):
+- "intraday": RSI > 65, at/above resistance, EMA mixed/bearish, pure RVOL spike, or earnings ≤3d
+- "swing": EMA BULLISH, MACD strengthening, RSI 40–65, breakout with volume, sector tailwind → 2–5d
+- "position": Major catalyst, RSI deeply oversold bounce, strong sector rotation → week+
 
 Respond ONLY with this exact JSON (no markdown fences):
 {{
   "signal": "BUY" or "SELL" or "HOLD",
   "confidence": <integer 0-100>,
-  "entry_zone": "<e.g. '$1.85 - $1.93'>",
-  "targets": [<T1 float>, <T2 float>, <T3 float>],
-  "stop_loss": <float>,
-  "reasoning": "<2-3 sentences: which signals fired, market regime, key risk>",
-  "action_plan": "<specific step-by-step: when to enter, where to add, when to exit, what invalidates the trade>",
+  "entry_low": <float: suggested low end of entry zone>,
+  "entry_high": <float: suggested high end of entry zone>,
+  "stop_loss": <float: hard stop price>,
+  "stop_pct": <float: stop percentage from current price, e.g. -4.2>,
+  "target_1": <float: first profit target>,
+  "target_2": <float: second profit target>,
+  "target_1_pct": <float: percentage gain to T1>,
   "trade_horizon": "intraday" or "swing" or "position",
-  "horizon_reasoning": "<1 sentence: the single most important factor that determined the timeframe>"
+  "horizon_reasoning": "<1 sentence: key factor that set the timeframe>",
+  "reasoning": "<2 sentences: which signals fired, market regime, key risk>",
+  "action_plan": "<step-by-step: entry, targets, exit, what invalidates>",
+  "main_risk": "<1 sentence: biggest risk to this trade>",
+  "top_3_signals": ["<signal1>", "<signal2>", "<signal3>"]
 }}"""
 
     try:
@@ -320,26 +351,67 @@ Respond ONLY with this exact JSON (no markdown fences):
             if start != -1 and end > start:
                 text = text[start:end]
 
-        result          = json.loads(text)
-        signal          = str(result.get("signal", "HOLD")).upper()
-        confidence      = max(0, min(100, int(result.get("confidence", 0))))
-        raw_targets     = [float(t) for t in result.get("targets", [])]
-        stop_loss       = float(result.get("stop_loss", round(price * 0.95, 4)))
+        result     = json.loads(text)
+        signal     = str(result.get("signal", "HOLD")).upper()
+        confidence = max(0, min(100, int(result.get("confidence", 0))))
+        atr        = context.get("atr", 0.0)
+        _fb_atr    = atr if atr > 0 else price * 0.015
 
-        # Enforce T1 < T2 < T3 with minimum 3% spacing between each level.
-        # Claude sometimes returns identical values — this fixes duplicates.
-        targets = _enforce_target_spacing(raw_targets, price)
+        # ── Parse new entry_low / entry_high fields ────────────────────────────
+        ez_low  = float(result.get("entry_low",  0) or 0)
+        ez_high = float(result.get("entry_high", 0) or 0)
+        # Fallback: parse legacy entry_zone string if new fields absent
+        if ez_low <= 0 or ez_high <= 0:
+            import re as _re
+            raw_ez  = str(result.get("entry_zone", f"${price:.4f}"))
+            ez_nums = [float(x) for x in _re.findall(r"[\d.]+", raw_ez)]
+            ez_low  = ez_nums[0] if ez_nums else price
+            ez_high = ez_nums[1] if len(ez_nums) > 1 else ez_low
+        # Enforce valid range
+        if ez_low <= 0 or ez_high <= 0 or ez_low >= ez_high:
+            print(f"⚠️  [Analyzer] Entry zone invalid — recalculating from ATR")
+            ez_low  = round(price - 0.5 * _fb_atr, 2)
+            ez_high = round(price + 0.5 * _fb_atr, 2)
+        entry_zone = f"${ez_low:.2f} - ${ez_high:.2f}"
 
-        # ATR-based stop floor: stop can't be tighter than 1× ATR below entry.
-        # Prevents stops from being blown on normal intraday noise for volatile stocks.
-        atr = context.get("atr", 0.0)
+        # ── Parse stop_loss ────────────────────────────────────────────────────
+        stop_loss = float(result.get("stop_loss", 0) or 0)
+        if stop_loss <= 0:
+            stop_loss = round(price - 2.0 * _fb_atr, 4)
+        # ATR-based floor: stop can't be tighter than 1× ATR
         if atr > 0:
             min_stop = round(price - atr, 4)
             if stop_loss > min_stop:
                 print(f"⚠️  [Analyzer] Stop widened: ${stop_loss:.4f} → ${min_stop:.4f} (1× ATR floor)")
                 stop_loss = min_stop
-        trade_horizon   = str(result.get("trade_horizon", "swing")).lower()
-        horizon_reason  = str(result.get("horizon_reasoning", ""))
+        # Validate stop < price
+        if stop_loss >= price:
+            stop_loss = round(price - 2.0 * _fb_atr, 4)
+            print(f"⚠️  [Analyzer] Stop was ≥ price — fixed to ${stop_loss:.4f}")
+        stop_pct = round((stop_loss - price) / price * 100, 1) if price > 0 else 0.0
+        if abs(stop_pct) < 0.5:
+            stop_loss = round(price - 2.0 * _fb_atr, 4)
+            stop_pct  = round((stop_loss - price) / price * 100, 1)
+            print(f"⚠️  [Analyzer] Stop pct < 0.5% — fixed to ${stop_loss:.4f} ({stop_pct:.1f}%)")
+
+        # ── Parse targets (new separate fields + legacy array fallback) ─────────
+        t1 = float(result.get("target_1", 0) or 0)
+        t2 = float(result.get("target_2", 0) or 0)
+        if t1 <= 0:
+            legacy = [float(x) for x in result.get("targets", [])]
+            t1 = legacy[0] if legacy else 0.0
+        if t2 <= 0:
+            legacy = [float(x) for x in result.get("targets", [])]
+            t2 = legacy[1] if len(legacy) > 1 else 0.0
+        raw_targets = [t1, t2, round(t2 * 1.10, 4) if t2 > 0 else 0.0]
+        targets = _enforce_target_spacing(raw_targets, price)
+
+        # ── Extra fields ────────────────────────────────────────────────────────
+        main_risk    = str(result.get("main_risk", ""))
+        top_3_signals = [str(s) for s in result.get("top_3_signals", [])][:3]
+
+        trade_horizon = str(result.get("trade_horizon", "swing")).lower()
+        horizon_reason = str(result.get("horizon_reasoning", ""))
         if trade_horizon not in ("intraday", "swing", "position"):
             trade_horizon = "swing"
 
@@ -349,7 +421,6 @@ Respond ONLY with this exact JSON (no markdown fences):
             print(f"⚠️  [Analyzer] Earnings cap applied → capped at {earnings_cap}")
 
         # Hard-kill: after-hours timing_mult == 0 suppresses swing BUYs entirely.
-        # news_triggered signals (spike/edgar/yf-news) are exempt — they need rapid response.
         if signal == "BUY" and t_mult == 0.0 and not context.get("news_triggered"):
             print(f"🔕 [Analyzer] After-hours BUY suppressed (timing_mult=0, not news-triggered)")
             signal     = "HOLD"
@@ -378,31 +449,33 @@ Respond ONLY with this exact JSON (no markdown fences):
 
         # Compute R:R ratio
         try:
-            entry_str  = str(result.get("entry_zone", "")).replace("$", "")
-            parts      = entry_str.split("-")
-            entry_mid  = (float(parts[0].strip()) + float(parts[1].strip())) / 2
-            t1         = targets[0] if targets else price * 1.05
-            risk       = entry_mid - stop_loss
-            reward     = t1 - entry_mid
-            rr_ratio   = round(reward / risk, 2) if risk > 0 else 0.0
+            entry_mid = (ez_low + ez_high) / 2
+            t1_val    = targets[0] if targets else price * 1.05
+            risk      = entry_mid - stop_loss
+            reward    = t1_val - entry_mid
+            rr_ratio  = round(reward / risk, 2) if risk > 0 else 0.0
         except Exception:
             rr_ratio = 0.0
 
         print(f"   📊 R:R ratio = {rr_ratio:.2f}:1")
-
         print(f"   ⏱️  Trade horizon: {trade_horizon.upper()} — {horizon_reason[:60]}")
 
         return {
-            "signal":           signal,
-            "confidence":       confidence,
-            "entry_zone":       str(result.get("entry_zone", f"${price:.4f}")),
-            "targets":          targets,
-            "stop_loss":        stop_loss,
-            "reasoning":        str(result.get("reasoning", "")),
-            "action_plan":      str(result.get("action_plan", "")),
-            "rr_ratio":         rr_ratio,
-            "trade_horizon":    trade_horizon,
+            "signal":            signal,
+            "confidence":        confidence,
+            "entry_zone":        entry_zone,
+            "entry_low":         round(ez_low, 4),
+            "entry_high":        round(ez_high, 4),
+            "targets":           targets,
+            "stop_loss":         stop_loss,
+            "stop_pct":          stop_pct,
+            "reasoning":         str(result.get("reasoning", "")),
+            "action_plan":       str(result.get("action_plan", "")),
+            "rr_ratio":          rr_ratio,
+            "trade_horizon":     trade_horizon,
             "horizon_reasoning": horizon_reason,
+            "main_risk":         main_risk,
+            "top_3_signals":     top_3_signals,
         }
 
     except json.JSONDecodeError as e:

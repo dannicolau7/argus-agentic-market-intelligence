@@ -607,3 +607,5 @@ def tech_node(state: dict) -> dict:
                                    "fired": [], "missed": []},
             "patterns":           [],
         }
+
+run_tech_agent = tech_node
