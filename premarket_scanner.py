@@ -450,12 +450,25 @@ def _build_candidate_list(mode: str = "broad") -> List[str]:
     """
     Build the ticker list to scan.
     mode: 'quick' (watchlist only) | 'broad' (watchlist + 150 universe) | 'full' (all)
+
+    Always prepends yesterday's EOD scanner picks (tomorrow_watchlist.json) so they
+    receive priority scoring even if their RVOL is low before market opens.
     """
     import watchlist_manager as wl
     watchlist = wl.load()
 
+    # Yesterday's EOD pre-identified setups — prioritise these
+    eod_picks: list = []
+    try:
+        from eod_scanner import load_tomorrow_tickers
+        eod_picks = load_tomorrow_tickers()
+        if eod_picks:
+            print(f"📅 [PremarketScanner] Loading {len(eod_picks)} EOD picks from yesterday")
+    except Exception:
+        pass
+
     if mode == "quick":
-        return watchlist
+        return list(dict.fromkeys(eod_picks + watchlist))
 
     universe: list = []
     try:
@@ -466,7 +479,7 @@ def _build_candidate_list(mode: str = "broad") -> List[str]:
 
     limit = None if mode == "full" else 150
     pool  = universe[:limit] if limit else universe
-    return list(dict.fromkeys(watchlist + pool))
+    return list(dict.fromkeys(eod_picks + watchlist + pool))
 
 
 # ── Main scan pipeline ─────────────────────────────────────────────────────────

@@ -356,10 +356,21 @@ async def monitoring_loop():
                 except Exception:
                     pass
 
-                # Priority order: watchlist → today's picks → pre-market gaps →
+                # Stocks pre-identified by yesterday's EOD scanner
+                eod_picks: list = []
+                try:
+                    from eod_scanner import load_tomorrow_tickers
+                    eod_picks = load_tomorrow_tickers()
+                    if eod_picks:
+                        print(f"📅 [Monitor] Yesterday's EOD picks: {eod_picks}")
+                except Exception:
+                    pass
+
+                # Priority order: watchlist → EOD picks → today's picks → pre-market gaps →
                 #                 earnings → options → momentum → movers → discovery
                 scan_list = list(dict.fromkeys(
                     TICKERS
+                    + eod_picks          # pre-identified by yesterday's EOD scanner
                     + todays_picks
                     + premarket_tickers
                     + earnings_plays

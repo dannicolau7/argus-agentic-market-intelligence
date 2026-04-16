@@ -8,7 +8,34 @@ If agreement_pct < 55 sets skip_claude=True and returns HOLD immediately,
 saving a Claude API call for genuinely mixed setups.
 """
 
+import json
+import os
+import time
 from datetime import datetime, timezone
+
+# ── Tomorrow-watchlist cache (refresh every 5 min) ─────────────────────────────
+_twl_tickers:     set   = set()
+_twl_loaded_at:   float = 0.0
+_TWL_TTL_S:       float = 300.0
+_TWL_PATH: str = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                              "data", "tomorrow_watchlist.json")
+
+
+def _get_tomorrow_tickers() -> set:
+    global _twl_tickers, _twl_loaded_at
+    if time.time() - _twl_loaded_at < _TWL_TTL_S:
+        return _twl_tickers
+    try:
+        if os.path.exists(_TWL_PATH):
+            with open(_TWL_PATH) as f:
+                data = json.load(f)
+            _twl_tickers = {s["ticker"] for s in data.get("setups", []) if s.get("ticker")}
+        else:
+            _twl_tickers = set()
+    except Exception:
+        _twl_tickers = set()
+    _twl_loaded_at = time.time()
+    return _twl_tickers
 
 
 # ── Signal derivations ─────────────────────────────────────────────────────────
@@ -176,6 +203,10 @@ def aggregator_node(state: dict) -> dict:
 
     if stoch_rsi == "BUY_CROSS":
         bullish_signals.append(("stoch_rsi_buy", 0.8))
+
+    # Pre-identified by yesterday's EOD scanner → modest bullish prior
+    if ticker in _get_tomorrow_tickers():
+        bullish_signals.append(("in_tomorrow_watchlist", 0.65))
 
     # ── BEARISH signals ────────────────────────────────────────────────────────
     if rsi > 80:

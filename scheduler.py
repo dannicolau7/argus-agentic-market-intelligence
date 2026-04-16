@@ -12,10 +12,12 @@ scheduler.py — Full-day trading schedule.
   9:10 AM  PREP alert (final scan → save prep_alert_list.json → WhatsApp)
   9:25 AM  Confirmation check (STILL BUY / WEAKENED / STAND DOWN → WhatsApp)
   9:30 AM  Live monitoring (handled by main.py's monitoring_loop)
+  3:30 PM  EOD pre-close scan (accumulation/bounce/coiling → tomorrow_watchlist.json)
   4:00 PM  "Market closed" + after-hours summary
+  4:15 PM  EOD after-close (earnings + EDGAR 8-Ks → update tomorrow_watchlist.json)
   4:30 PM  Daily performance report WhatsApp
-  6:00 PM  Earnings scan  (WhatsApp if score >= 75)
-  8:00 PM  Evening news scan  (WhatsApp if score >= 85)
+  6:00 PM  EOD evening scan (AH prices + Polygon news → finalize tomorrow_watchlist.json)
+  8:00 PM  EOD final overnight (last EDGAR + breaking news sweep)
  10:00 PM  Final scan  (WhatsApp if score >= 85)
  11:00 PM  Good night + graceful shutdown
 """
@@ -467,35 +469,55 @@ async def scheduler_loop(paper: bool, daily_log: list, signal_memory: dict):
                 _mark_fired("market_opens_soon")
                 await _run_confirmation_alert(paper)
 
+            # ── 3:30 PM — EOD pre-close scan (accumulation / coiling / bounce)
+            if weekday and _in_window(15, 30) and _should_fire("eod_preclose"):
+                _mark_fired("eod_preclose")
+                try:
+                    from eod_scanner import run_preclose_scan
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(_executor, lambda: run_preclose_scan(test=paper))
+                except Exception as _e:
+                    print(f"❌ [3:30 PM] EOD pre-close error: {_e}")
+
             # ── 4:00 PM — Market closed
             if weekday and _in_window(16, 0) and _should_fire("market_closed"):
                 _mark_fired("market_closed")
                 await _send_market_closed(paper, daily_log, signal_memory)
+
+            # ── 4:15 PM — EOD after-close (earnings releases + EDGAR 8-Ks)
+            if weekday and _in_window(16, 15) and _should_fire("eod_afterclose"):
+                _mark_fired("eod_afterclose")
+                try:
+                    from eod_scanner import run_afterclose_scan
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(_executor, lambda: run_afterclose_scan(test=paper))
+                except Exception as _e:
+                    print(f"❌ [4:15 PM] EOD after-close error: {_e}")
 
             # ── 4:30 PM — Daily report
             if weekday and _in_window(16, 30) and _should_fire("daily_report"):
                 _mark_fired("daily_report")
                 await _send_daily_report(paper, daily_log)
 
-            # ── 6:00 PM — Earnings scan
-            if weekday and _in_window(18, 0) and _should_fire("earnings_scan"):
-                _mark_fired("earnings_scan")
-                await _run_off_hours_scan(
-                    "earnings_scan", paper,
-                    alert_threshold=75,
-                    label="6:00 PM EARNINGS",
-                    daily_log=daily_log,
-                )
+            # ── 6:00 PM — EOD evening scan (AH prices + news finalization)
+            if weekday and _in_window(18, 0) and _should_fire("eod_evening"):
+                _mark_fired("eod_evening")
+                try:
+                    from eod_scanner import run_evening_scan
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(_executor, lambda: run_evening_scan(test=paper))
+                except Exception as _e:
+                    print(f"❌ [6:00 PM] EOD evening scan error: {_e}")
 
-            # ── 8:00 PM — Evening scan
-            if weekday and _in_window(20, 0) and _should_fire("evening_scan"):
-                _mark_fired("evening_scan")
-                await _run_off_hours_scan(
-                    "evening_scan", paper,
-                    alert_threshold=85,
-                    label="8:00 PM EVENING",
-                    daily_log=daily_log,
-                )
+            # ── 8:00 PM — EOD final overnight check
+            if weekday and _in_window(20, 0) and _should_fire("eod_final"):
+                _mark_fired("eod_final")
+                try:
+                    from eod_scanner import run_final_overnight
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(_executor, lambda: run_final_overnight(test=paper))
+                except Exception as _e:
+                    print(f"❌ [8:00 PM] EOD final overnight error: {_e}")
 
             # ── 10:00 PM — Final scan
             if weekday and _in_window(22, 0) and _should_fire("final_scan"):
