@@ -40,6 +40,55 @@ def _fetch_premarket_price(ticker: str) -> float:
         return 0.0
 
 
+def get_premarket_data(ticker: str) -> dict:
+    """
+    Rich pre-market snapshot using yfinance.info + 1-min bars.
+    Returns: premarket_price, premarket_change_pct, premarket_volume,
+             premarket_high, premarket_low, is_premarket_active.
+    """
+    result = {
+        "premarket_price":      0.0,
+        "premarket_change_pct": 0.0,
+        "premarket_volume":     0,
+        "premarket_high":       0.0,
+        "premarket_low":        0.0,
+        "is_premarket_active":  False,
+    }
+    try:
+        stock = yf.Ticker(ticker)
+        info  = stock.info
+
+        pm_price = float(info.get("preMarketPrice")  or 0.0)
+        pm_vol   = int  (info.get("preMarketVolume") or 0)
+        pm_chg   = float(info.get("preMarketChangePercent") or 0.0)
+        # yfinance sometimes returns the ratio (0.05 = 5%) vs already-pct
+        if pm_chg != 0 and abs(pm_chg) < 1:
+            pm_chg *= 100
+
+        result["premarket_price"]      = pm_price
+        result["premarket_volume"]     = pm_vol
+        result["premarket_change_pct"] = round(pm_chg, 2)
+        result["is_premarket_active"]  = pm_price > 0
+
+        # High/low from 1-min bars
+        hist = stock.history(period="1d", interval="1m", prepost=True)
+        if not hist.empty:
+            from zoneinfo import ZoneInfo
+            from datetime import time as _dtime
+            _ET = ZoneInfo("America/New_York")
+            if hist.index.tz is None:
+                hist.index = hist.index.tz_localize("UTC").tz_convert(_ET)
+            else:
+                hist.index = hist.index.tz_convert(_ET)
+            pre = hist[hist.index.time < _dtime(9, 30)]
+            if not pre.empty:
+                result["premarket_high"] = float(pre["High"].max())
+                result["premarket_low"]  = float(pre["Low"].min())
+    except Exception as e:
+        print(f"⚠️  [DataAgent] get_premarket_data({ticker}) error: {e}")
+    return result
+
+
 def _fetch_earnings_info(ticker: str) -> dict:
     """
     Returns days until next earnings and whether it's within danger zone.
@@ -109,9 +158,10 @@ def run_data_agent(state: dict) -> dict:
     print(f"📡 [DataAgent] Fetching data for {ticker}...")
 
     try:
-        # Current price
+        # Current price — record fetch time so alert_agent can re-fetch if stale
         price = get_current_price(ticker)
-        print(f"   💰 Price: ${price}")
+        price_fetched_at = datetime.now(timezone.utc).isoformat()
+        print(f"   💰 Price: ${price}  [fetched {datetime.now().strftime('%H:%M:%S')}]")
 
         # Daily bars (90 days for technical analysis)
         bars = get_daily_bars(ticker, days=90)
@@ -163,6 +213,7 @@ def run_data_agent(state: dict) -> dict:
 
         state.update({
             "current_price":    price,
+            "price_fetched_at": price_fetched_at,
             "bars":             bars,
             "intraday_bars":    intraday_bars,
             "premarket_price":  premarket_price,

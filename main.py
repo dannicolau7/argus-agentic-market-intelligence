@@ -346,10 +346,21 @@ async def monitoring_loop():
                     except Exception as _pm_e:
                         print(f"⚠️  [Monitor] Pre-market scan error: {_pm_e}")
 
-                # Priority order: watchlist → pre-market gaps → earnings → options →
-                #                 momentum → top movers → discovery
+                # Today's pre-market picks (BUY AT OPEN from 9:10 AM prep alert)
+                todays_picks: list = []
+                try:
+                    from premarket_scanner import load_todays_watchlist
+                    todays_picks = load_todays_watchlist()
+                    if todays_picks:
+                        print(f"🌅 [Monitor] Today's pre-market picks: {todays_picks}")
+                except Exception:
+                    pass
+
+                # Priority order: watchlist → today's picks → pre-market gaps →
+                #                 earnings → options → momentum → movers → discovery
                 scan_list = list(dict.fromkeys(
                     TICKERS
+                    + todays_picks
                     + premarket_tickers
                     + earnings_plays
                     + opts_tickers
