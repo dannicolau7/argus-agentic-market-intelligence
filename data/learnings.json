@@ -1,0 +1,27 @@
+{
+  "generated_at": "default",
+  "win_rate": 0.5,
+  "signal_weights": {
+    "macd": 1.0,
+    "rsi_oversold": 1.0,
+    "volume_spike": 1.0,
+    "edgar_filing": 1.0,
+    "news_sentiment": 1.0,
+    "reddit": 1.0,
+    "ema_cross": 1.0,
+    "vwap": 1.0,
+    "rsi_bounce": 1.0,
+    "rsi_momentum": 1.0,
+    "volume": 1.0,
+    "bollinger": 1.0,
+    "float_rot": 1.0,
+    "sentiment": 1.0,
+    "smart_money": 1.0,
+    "support": 1.0,
+    "ema_stack": 1.0,
+    "gap": 1.0
+  },
+  "insights": [
+    "Default weights \u2014 no history yet"
+  ]
+}

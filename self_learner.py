@@ -13,8 +13,15 @@ Called by analyzer.py at the start of each analysis.
 """
 
 import csv
+import json
 import os
 from collections import defaultdict
+
+# Path to learnings.json written by reflection_agent.py
+LEARNINGS_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "data", "learnings.json"
+)
 
 from langsmith import Client
 from features.news_classifier import BULLISH_CATEGORIES
@@ -138,13 +145,31 @@ def load_win_rates() -> dict:
 def get_weight_adjustments() -> dict:
     """
     Returns a dict of weight multipliers for each signal.
-    win_rate > 0.65 → multiplier 1.3 (boost)
+
+    Primary source: data/learnings.json signal_weights (written by reflection_agent).
+    Fallback: best_picks_log.csv win-rate computation.
+    No data: default 1.0 for all signals.
+
+    win_rate ≥ 0.65 → multiplier 1.3 (boost)
     win_rate 0.50–0.65 → multiplier 1.0 (neutral)
     win_rate < 0.50 → multiplier 0.7 (reduce)
-    No data → multiplier 1.0 (default)
     """
+    # ── Primary: reflection_agent learnings ───────────────────────────────────
+    try:
+        if os.path.exists(LEARNINGS_PATH):
+            with open(LEARNINGS_PATH) as f:
+                learnings = json.load(f)
+            sig_weights = learnings.get("signal_weights")
+            if sig_weights and isinstance(sig_weights, dict) and len(sig_weights) > 0:
+                adjustments = dict(DEFAULT_WEIGHTS)
+                adjustments.update(sig_weights)
+                return adjustments
+    except Exception as _e:
+        print(f"⚠️  [SelfLearner] Could not read learnings.json: {_e}")
+
+    # ── Fallback: CSV-based win-rate computation ───────────────────────────────
     win_rates   = load_win_rates()
-    adjustments = dict(DEFAULT_WEIGHTS)  # start with all 1.0
+    adjustments = dict(DEFAULT_WEIGHTS)
 
     for signal, data in win_rates.items():
         wr = data["win_rate"]

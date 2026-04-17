@@ -481,6 +481,51 @@ def tech_node(state: dict) -> dict:
         # ── Core indicators ───────────────────────────────────────────────────
         rsi        = _calc_rsi(closes)
         intra_rsi  = _intraday_rsi(intraday_bars)
+
+        # ── Stochastic RSI ────────────────────────────────────────────────────
+        try:
+            from ta.momentum import StochRSIIndicator
+            import pandas as pd
+
+            close_series = pd.Series([float(b.get("c", b.get("close", 0)))
+                                      for b in bars])
+
+            if len(close_series) >= 14:
+                stoch = StochRSIIndicator(
+                    close=close_series,
+                    window=14,
+                    smooth1=3,
+                    smooth2=3,
+                )
+                k_series = stoch.stochrsi_k()
+                d_series = stoch.stochrsi_d()
+
+                last_k = float(k_series.iloc[-1]) if not k_series.empty else 0.5
+                last_d = float(d_series.iloc[-1]) if not d_series.empty else 0.5
+                prev_k = float(k_series.iloc[-2]) if len(k_series) > 1 else last_k
+                prev_d = float(d_series.iloc[-2]) if len(d_series) > 1 else last_d
+
+                if last_k < 0.20:
+                    stoch_signal = "OVERSOLD"
+                elif last_k > 0.80:
+                    stoch_signal = "OVERBOUGHT"
+                elif prev_k <= prev_d and last_k > last_d and last_k < 0.50:
+                    stoch_signal = "BUY_CROSS"
+                elif prev_k >= prev_d and last_k < last_d and last_k > 0.50:
+                    stoch_signal = "SELL_CROSS"
+                else:
+                    stoch_signal = "NEUTRAL"
+            else:
+                last_k, last_d = 0.5, 0.5
+                stoch_signal   = "NEUTRAL"
+
+        except Exception as _stoch_err:
+            print(f"⚠️  [TechAgent] StochRSI error: {_stoch_err}")
+            last_k, last_d = 0.5, 0.5
+            stoch_signal   = "NEUTRAL"
+
+        print(f"   Stoch RSI: k={last_k:.3f} d={last_d:.3f} → {stoch_signal}")
+
         macd       = _calc_macd(closes)
         bollinger  = _calc_bollinger(closes)
         atr        = _calc_atr(bars)
@@ -556,6 +601,10 @@ def tech_node(state: dict) -> dict:
             **state,
             "rsi":                rsi,
             "intraday_rsi":       intra_rsi,
+            "stoch_rsi":          round(last_k, 3),
+            "stoch_rsi_k":        round(last_k, 3),
+            "stoch_rsi_d":        round(last_d, 3),
+            "stoch_rsi_signal":   stoch_signal,
             "macd":               macd,
             "bollinger":          bollinger,
             "atr":                atr,
@@ -585,6 +634,10 @@ def tech_node(state: dict) -> dict:
             **state,
             "rsi":                50.0,
             "intraday_rsi":       50.0,
+            "stoch_rsi":          0.5,
+            "stoch_rsi_k":        0.5,
+            "stoch_rsi_d":        0.5,
+            "stoch_rsi_signal":   "NEUTRAL",
             "macd":               {"macd": 0.0, "signal": 0.0, "histogram": 0.0},
             "bollinger":          {"upper": price, "middle": price, "lower": price, "bandwidth": 0.0},
             "atr":                0.0,

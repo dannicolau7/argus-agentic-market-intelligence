@@ -27,8 +27,25 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from alerts import send_whatsapp
-from news_watcher import _quick_gate, _already_alerted, _mark_alerted, _run_pipeline
+from news_watcher import _quick_gate, _already_alerted, _mark_alerted
+
+
+def _run_edgar_pipeline(ticker: str, paper: bool, company_name: str,
+                        filing_type: str = "8-K") -> dict:
+    """
+    Run the full LangGraph pipeline with EDGAR context injected into state.
+    Passes has_edgar_filing=True so signal_aggregator fires the 0.95-weight
+    edgar_filing bullish signal and never skips Claude on 8-K events.
+    """
+    from graph import GRAPH, make_initial_state
+    state = make_initial_state(ticker, paper_trading=paper)
+    state.update({
+        "has_edgar_filing":   True,
+        "edgar_filing_type":  filing_type,
+        "edgar_summary":      f"SEC {filing_type} filing: {company_name}",
+        "news_triggered":     True,
+    })
+    return GRAPH.invoke(state)
 
 EST            = ZoneInfo("America/New_York")
 EDGAR_INTERVAL = 60   # seconds between polls
@@ -185,29 +202,15 @@ async def edgar_watcher_loop(run_pipeline_fn=None, paper: bool = False):
                     continue
 
                 now_s = datetime.now(tz=EST).strftime("%H:%M")
-                print(f"   📋 [EDGAR] {ticker} ({company_name}) filed 8-K at {now_s}")
-
-                # Preliminary WhatsApp
-                pre_msg = (
-                    f"📋 8-K FILING DETECTED [{now_s}]\n"
-                    f"{ticker} ({company_name})\n"
-                    f"Filed with SEC — analyzing now..."
-                )
-                if not paper:
-                    try:
-                        send_whatsapp(pre_msg)
-                    except Exception as e:
-                        print(f"⚠️  [EDGAR] WhatsApp failed: {e}")
-                else:
-                    print(f"   📋 [PAPER] Would send:\n{pre_msg}")
+                print(f"   📋 [EDGAR] {ticker} ({company_name}) filed 8-K at {now_s} — running pipeline...")
 
                 # Mark alerted BEFORE pipeline so concurrent sources don't double-alert
                 _mark_alerted(ticker)
 
-                # Full pipeline with news_triggered=True
+                # Full pipeline with EDGAR context injected
                 try:
                     result = await loop.run_in_executor(
-                        None, _run_pipeline, ticker, paper, True
+                        None, _run_edgar_pipeline, ticker, paper, company_name
                     )
                     signal = result.get("signal", "HOLD")
                     conf   = result.get("confidence", 0)

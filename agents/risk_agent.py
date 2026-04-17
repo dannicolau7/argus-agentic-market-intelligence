@@ -23,42 +23,76 @@ from config import (
 
 # Regime-based confidence floor: in BEAR markets only high-conviction trades pass
 REGIME_CONFIDENCE_FLOOR = {
-    "BULL":     55,
-    "RECOVERY": 60,
-    "NEUTRAL":  65,
-    "RISK_OFF": 70,
-    "BEAR":     78,
-    "STAGFLATION": 75,
+    "BULL":     50,
+    "RECOVERY": 55,
+    "NEUTRAL":  60,
+    "RISK_OFF": 65,
+    "BEAR":     75,
+    "STAGFLATION": 70,
 }
 
-MIN_RR_RATIO = 1.5
+MIN_RR_RATIO = 1.2
 
 
 def risk_node(state: dict) -> dict:
-    signal     = state.get("signal", "HOLD")
-    ticker     = state["ticker"]
+    from circuit_breaker import check_market
 
-    # Only BUY signals go through risk checks
+    signal = state.get("signal", "HOLD")
+    ticker = state["ticker"]
+
+    # ── 0. Circuit breaker — block BUYs on crash days / VIX spike ─────────────
+    try:
+        spy_chg = state.get("spy_day_change", 0.0)
+        if spy_chg == 0.0:
+            import yfinance as yf
+            fi       = yf.Ticker("SPY").fast_info
+            spy_prev = float(fi.get("previousClose") or fi.get("previous_close") or 0)
+            spy_now  = float(fi.get("lastPrice")     or fi.get("last_price")     or 0)
+            if spy_prev > 0:
+                spy_chg = (spy_now - spy_prev) / spy_prev * 100
+
+        cb = check_market(spy_chg)
+
+        if not cb["safe"] and signal == "BUY":
+            print(f"🚨 [RiskAgent] Circuit breaker ACTIVE: {cb['reason']}")
+            print(f"   VIX: {cb.get('vix', '?')} | SPY: {spy_chg:.1f}%")
+            return {
+                **state,
+                "risk_approved":    False,
+                "risk_veto_reason": f"Circuit breaker: {cb['reason']}",
+                "risk_warnings":    state.get("risk_warnings", []) + [cb["reason"]],
+                "risk_multiplier":  0.0,
+                "should_alert":     False,
+                "signal":           "HOLD",
+            }
+        elif not cb["safe"]:
+            print(f"⚠️  [RiskAgent] Circuit breaker warning (non-BUY): {cb['reason']}")
+
+    except Exception as _cb_err:
+        print(f"⚠️  [RiskAgent] Circuit breaker check failed (fail-open): {_cb_err}")
+
+    # Only BUY signals go through remaining risk checks
     if signal != "BUY":
         return {**state, "risk_approved": True, "risk_veto_reason": "",
                 "risk_multiplier": 1.0, "risk_warnings": []}
 
-    confidence  = state.get("confidence", 0)
-    atr         = state.get("atr", 0.0)
-    price       = state.get("current_price", 0.0)
-    rr_ratio    = state.get("rr_ratio", 0.0)
-    sector      = state.get("sector", "Unknown")
-    float_rot   = state.get("float_rotation", 0.0)
-    avg_volume  = state.get("avg_volume", 0.0)
-    news_trig   = state.get("news_triggered", False)
-    stop_loss   = state.get("stop_loss", 0.0)
+    confidence   = state.get("confidence", 0)
+    atr          = state.get("atr", 0.0)
+    price        = state.get("current_price", 0.0)
+    rr_ratio     = state.get("rr_ratio", 0.0)
+    sector       = state.get("sector", "Unknown")
+    float_rot    = state.get("float_rotation", 0.0)
+    avg_volume   = state.get("avg_volume", 0.0)
+    news_trig    = state.get("news_triggered", False)
+    stop_loss    = state.get("stop_loss", 0.0)
+    paper        = state.get("paper_trading", False)
 
     vetoes:   list[str] = []
     warnings: list[str] = []
     risk_multiplier     = 1.0   # 1.0 = full size, 0.5 = half size, 0.0 = veto
 
     # ── 1. Daily loss limit ────────────────────────────────────────────────────
-    daily_loss_pct = _get_daily_loss_pct()
+    daily_loss_pct = _get_daily_loss_pct(paper)
     if daily_loss_pct <= -MAX_DAILY_LOSS:
         vetoes.append(
             f"Daily loss limit hit ({daily_loss_pct*100:.1f}% vs -{MAX_DAILY_LOSS*100:.0f}% limit) "
@@ -66,7 +100,7 @@ def risk_node(state: dict) -> dict:
         )
 
     # ── 2. Open position count ─────────────────────────────────────────────────
-    open_count = _count_open_positions()
+    open_count = _count_open_positions(paper)
     if open_count >= MAX_OPEN_POSITIONS:
         vetoes.append(
             f"Max open positions reached ({open_count}/{MAX_OPEN_POSITIONS}) "
@@ -74,7 +108,7 @@ def risk_node(state: dict) -> dict:
         )
 
     # ── 3. Sector concentration ────────────────────────────────────────────────
-    sector_pct = _sector_exposure_pct(sector)
+    sector_pct = _sector_exposure_pct(sector, paper)
     if sector_pct >= MAX_SECTOR_PCT:
         vetoes.append(
             f"Sector concentration too high: {sector} already at {sector_pct*100:.0f}% "
@@ -87,7 +121,7 @@ def risk_node(state: dict) -> dict:
     # ── 4. Small-cap / low-float exposure ──────────────────────────────────────
     is_small_cap = avg_volume > 0 and avg_volume < 500_000
     if is_small_cap:
-        smallcap_pct = _smallcap_exposure_pct()
+        smallcap_pct = _smallcap_exposure_pct(paper)
         if smallcap_pct >= MAX_SMALLCAP_PCT:
             vetoes.append(
                 f"Small-cap exposure limit: {smallcap_pct*100:.0f}% of portfolio already in "
@@ -166,58 +200,57 @@ def risk_node(state: dict) -> dict:
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def _get_daily_loss_pct() -> float:
+def _get_daily_loss_pct(paper: bool = False) -> float:
     """Compute today's realized P&L as % of portfolio from performance_tracker."""
     try:
-        from datetime import date
         import performance_tracker as pt
         with pt._get_conn() as conn:
             rows = conn.execute("""
-                SELECT o.return_pct, s.price
+                SELECT o.return_pct
                 FROM outcomes o
                 JOIN signals s ON s.id = o.signal_id
                 WHERE s.fired_at >= date('now', 'start of day')
+                  AND s.paper = ?
                   AND o.win IS NOT NULL
                   AND o.checkpoint = '1d'
-            """).fetchall()
+            """, (int(paper),)).fetchall()
         if not rows:
             return 0.0
-        # Average return across today's closed trades as proxy for daily P&L
         return sum(r[0] for r in rows) / 100 / len(rows)
     except Exception:
         return 0.0    # fail open — don't block if tracker unavailable
 
 
-def _count_open_positions() -> int:
-    """Count open BUY positions from performance_tracker."""
+def _count_open_positions(paper: bool = False) -> int:
+    """Count open BUY positions from performance_tracker, scoped to paper/live."""
     try:
         import performance_tracker as pt
-        return len(pt.get_open_signals(paper=False))
+        return len(pt.get_open_signals(paper=paper))
     except Exception:
         return 0
 
 
-def _sector_exposure_pct(sector: str) -> float:
-    """Fraction of open BUY positions already in `sector` (by position count)."""
+def _sector_exposure_pct(sector: str, paper: bool = False) -> float:
+    """Fraction of open BUY positions already in `sector`, scoped to paper/live."""
     try:
         import performance_tracker as pt
+        p = int(paper)
         with pt._get_conn() as conn:
-            # "Open" = BUY signal whose 7d outcome is still pending
             total = conn.execute("""
                 SELECT COUNT(*) FROM signals s
-                WHERE s.signal = 'BUY' AND s.paper = 0
+                WHERE s.signal = 'BUY' AND s.paper = ?
                   AND NOT EXISTS (
                       SELECT 1 FROM outcomes o
                       WHERE o.signal_id = s.id
                         AND o.checkpoint = '7d'
                         AND o.win IS NOT NULL
                   )
-            """).fetchone()[0]
+            """, (p,)).fetchone()[0]
             if total == 0:
                 return 0.0
             in_sector = conn.execute("""
                 SELECT COUNT(*) FROM signals s
-                WHERE s.signal = 'BUY' AND s.paper = 0
+                WHERE s.signal = 'BUY' AND s.paper = ?
                   AND s.sector = ?
                   AND NOT EXISTS (
                       SELECT 1 FROM outcomes o
@@ -225,32 +258,33 @@ def _sector_exposure_pct(sector: str) -> float:
                         AND o.checkpoint = '7d'
                         AND o.win IS NOT NULL
                   )
-            """, (sector,)).fetchone()[0]
+            """, (p, sector)).fetchone()[0]
             return in_sector / total
     except Exception:
         return 0.0   # fail open
 
 
-def _smallcap_exposure_pct() -> float:
-    """Fraction of open BUY positions in low-liquidity names (avg_volume < 500k)."""
+def _smallcap_exposure_pct(paper: bool = False) -> float:
+    """Fraction of open BUY positions in low-liquidity names, scoped to paper/live."""
     try:
         import performance_tracker as pt
+        p = int(paper)
         with pt._get_conn() as conn:
             total = conn.execute("""
                 SELECT COUNT(*) FROM signals s
-                WHERE s.signal = 'BUY' AND s.paper = 0
+                WHERE s.signal = 'BUY' AND s.paper = ?
                   AND NOT EXISTS (
                       SELECT 1 FROM outcomes o
                       WHERE o.signal_id = s.id
                         AND o.checkpoint = '7d'
                         AND o.win IS NOT NULL
                   )
-            """).fetchone()[0]
+            """, (p,)).fetchone()[0]
             if total == 0:
                 return 0.0
             small_cap = conn.execute("""
                 SELECT COUNT(*) FROM signals s
-                WHERE s.signal = 'BUY' AND s.paper = 0
+                WHERE s.signal = 'BUY' AND s.paper = ?
                   AND s.avg_volume > 0 AND s.avg_volume < 500000
                   AND NOT EXISTS (
                       SELECT 1 FROM outcomes o
@@ -258,7 +292,7 @@ def _smallcap_exposure_pct() -> float:
                         AND o.checkpoint = '7d'
                         AND o.win IS NOT NULL
                   )
-            """).fetchone()[0]
+            """, (p,)).fetchone()[0]
             return small_cap / total
     except Exception:
         return 0.0   # fail open

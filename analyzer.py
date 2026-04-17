@@ -421,14 +421,25 @@ Respond ONLY with this exact JSON (no markdown fences):
             print(f"⚠️  [Analyzer] Earnings cap applied → capped at {earnings_cap}")
 
         # Hard-kill: after-hours timing_mult == 0 suppresses swing BUYs entirely.
-        if signal == "BUY" and t_mult == 0.0 and not context.get("news_triggered"):
-            print(f"🔕 [Analyzer] After-hours BUY suppressed (timing_mult=0, not news-triggered)")
+        # Exception: EDGAR 8-K filings and other major catalysts bypass suppression.
+        _has_edgar    = context.get("has_edgar_filing", False)
+        _is_8k        = context.get("edgar_filing_type", "") == "8-K"
+        _news_trig    = context.get("news_triggered", False)
+        _major_cat    = context.get("major_catalyst", False)
+        _suppress     = (signal == "BUY" and t_mult == 0.0)
+        _bypass       = (_has_edgar and _is_8k) or (_news_trig and _major_cat)
+
+        if _suppress and not _bypass:
+            print(f"🔕 [Analyzer] After-hours BUY suppressed (timing_mult=0, no major catalyst)")
             signal     = "HOLD"
             confidence = 0
             result["reasoning"] = (
                 "Signal suppressed: after-hours swing BUY. "
                 "Re-evaluates at market open. Set up alerts for the open."
             )
+        elif _suppress and _bypass:
+            cat_label = context.get("edgar_filing_type", "catalyst")
+            print(f"🚨 [Analyzer] Major catalyst ({cat_label}) — bypassing after-hours suppression")
 
         # Circuit breaker — suppress BUY on extreme fear / market selloff
         if signal == "BUY":

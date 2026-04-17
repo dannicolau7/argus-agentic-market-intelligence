@@ -65,6 +65,63 @@ def save_learnings(data: dict):
     LEARNINGS_PATH.write_text(json.dumps(data, indent=2))
 
 
+# ── Signal weight computation ─────────────────────────────────────────────────
+
+def _compute_signal_weights(rows: list, stats_30: dict) -> dict:
+    """
+    Derive per-signal weight multipliers from 30-day outcome data.
+    win_rate ≥ 0.65 → 1.3 (boost)
+    win_rate 0.45–0.65 → 1.0 (neutral)
+    win_rate < 0.45 → 0.7 (reduce)
+    Signals with fewer than 3 samples keep default 1.0.
+    """
+    from collections import defaultdict
+
+    wins   = defaultdict(int)
+    totals = defaultdict(int)
+
+    for r in rows:
+        won = bool(r["win"])
+        try:
+            rsi_val = float(r["rsi"]) if r["rsi"] is not None else 50.0
+        except (TypeError, ValueError):
+            rsi_val = 50.0
+
+        if r["volume_spike"]:
+            totals["volume"] += 1
+            if won:
+                wins["volume"] += 1
+        if 30 <= rsi_val <= 50:
+            totals["rsi_bounce"] += 1
+            if won:
+                wins["rsi_bounce"] += 1
+        elif 50 < rsi_val <= 65:
+            totals["rsi_momentum"] += 1
+            if won:
+                wins["rsi_momentum"] += 1
+        if r["news_triggered"]:
+            totals["news_sentiment"] += 1
+            if won:
+                wins["news_sentiment"] += 1
+
+    default_signals = [
+        "macd", "rsi_oversold", "volume_spike", "edgar_filing",
+        "news_sentiment", "reddit", "ema_cross", "vwap",
+        "rsi_bounce", "rsi_momentum", "volume", "bollinger",
+        "float_rot", "sentiment", "smart_money", "support", "ema_stack", "gap",
+    ]
+
+    weights = {}
+    for sig in default_signals:
+        if totals[sig] >= 3:
+            wr = wins[sig] / totals[sig]
+            weights[sig] = 1.3 if wr >= 0.65 else 0.7 if wr < 0.45 else 1.0
+        else:
+            weights[sig] = 1.0
+
+    return weights
+
+
 # ── Core reflection ───────────────────────────────────────────────────────────
 
 def _run_reflection(paper: bool = False) -> dict:
@@ -157,6 +214,7 @@ Respond ONLY with valid JSON:
 
         # Update and save learnings
         learnings["last_30d_win_rate"]  = stats_30["win_rate"]
+        learnings["win_rate"]           = stats_30["win_rate"]
         learnings["confidence_adj"]     = int(result.get("confidence_adj", 0))
         learnings["avoid_conditions"]   = result.get("avoid_conditions", [])
         learnings["favor_conditions"]   = result.get("favor_conditions", [])
@@ -164,6 +222,10 @@ Respond ONLY with valid JSON:
         if result.get("insight"):
             insights.append(result["insight"])
             learnings["insights"] = insights[-5:]   # keep last 5
+
+        # Compute per-signal weight adjustments from historical win data
+        learnings["signal_weights"] = _compute_signal_weights(rows, stats_30)
+
         save_learnings(learnings)
 
         # Inject adjusted threshold into world_context for decision_agent to read

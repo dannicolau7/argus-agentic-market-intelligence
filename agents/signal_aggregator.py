@@ -116,6 +116,16 @@ def _pattern_name(p) -> str:
 # ── Main node ──────────────────────────────────────────────────────────────────
 
 def aggregator_node(state: dict) -> dict:
+    # ── EDGAR 8-K major catalyst override ──────────────────────────────────────
+    # Must run BEFORE agreement_pct check so 8-K events never skip Claude.
+    has_edgar_8k = (
+        bool(state.get("has_edgar_filing", False)) and
+        state.get("edgar_filing_type", "") == "8-K"
+    )
+    if has_edgar_8k:
+        print(f"🚨 [Aggregator] EDGAR 8-K detected for {state.get('ticker','?')} "
+              f"— major catalyst override (Claude will NOT be skipped)")
+
     ticker       = state.get("ticker", "?")
     price        = state.get("current_price", 0.0)
     rsi          = state.get("rsi", 50.0)
@@ -281,11 +291,12 @@ def aggregator_node(state: dict) -> dict:
         "consensus":         consensus,
         "signal_count_bull": len(bullish_signals),
         "signal_count_bear": len(bearish_signals),
+        "major_catalyst":    has_edgar_8k,
         "skip_claude":       False,
         "skip_reason":       "",
     }
 
-    if agreement_pct < 55:
+    if agreement_pct < 55 and not has_edgar_8k:
         print(
             f"⚖️  [Aggregator] Agents disagree ({agreement_pct:.0f}%) → "
             f"HOLD, skipping Claude call"
@@ -296,5 +307,10 @@ def aggregator_node(state: dict) -> dict:
             "skip_reason": f"Agents disagree: agreement only {agreement_pct:.0f}%",
             "skip_claude": True,
         })
+    elif agreement_pct < 55 and has_edgar_8k:
+        print(
+            f"⚖️  [Aggregator] Low agreement ({agreement_pct:.0f}%) but "
+            f"EDGAR 8-K present — proceeding to Claude anyway"
+        )
 
     return {**state, **updates}
