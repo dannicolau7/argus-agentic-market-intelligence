@@ -113,7 +113,8 @@ class TestApiWatchlist:
 
     def test_required_keys_present(self):
         data = client.get("/api/watchlist").json()
-        assert "watchlist" in data
+        assert "scan_list" in data
+        assert "count"     in data
         assert "memory"    in data
 
     def test_all_tickers_listed(self):
@@ -123,7 +124,7 @@ class TestApiWatchlist:
         main._app_state.ticker_states["SOUN"] = {"signal": "HOLD", "confidence": 50,
                                                    "current_price": 3.10, "rsi": 55.0}
         data = client.get("/api/watchlist").json()
-        tickers = [row["ticker"] for row in data["watchlist"]]
+        tickers = [row["ticker"] for row in data["scan_list"]]
         assert "BZAI" in tickers
         assert "SOUN" in tickers
 
@@ -131,7 +132,7 @@ class TestApiWatchlist:
         main._app_state.ticker_states["BZAI"] = {
             "signal": "BUY", "confidence": 78, "current_price": 2.45, "rsi": 42.0,
         }
-        row = client.get("/api/watchlist").json()["watchlist"][0]
+        row = client.get("/api/watchlist").json()["scan_list"][0]
         for key in ("ticker", "signal", "confidence", "price", "rsi"):
             assert key in row, f"missing key: {key}"
 

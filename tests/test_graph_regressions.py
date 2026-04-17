@@ -105,7 +105,6 @@ class TestSignalAggregator:
 
 
 class TestDecisionValidator:
-    @pytest.mark.xfail(reason="validator hardcodes 65 confidence floor and can override dynamic decision thresholds")
     def test_news_triggered_signal_below_65_should_not_be_forced_to_hold(self):
         from agents.decision_validator import validator_node
 
@@ -133,7 +132,6 @@ class TestDecisionValidator:
 
 
 class TestDecisionHubInteraction:
-    @pytest.mark.xfail(reason="decision_agent marks hub alert state before validation/risk/execution/delivery succeed")
     def test_decision_stage_should_not_mark_hub_alert_early(self, monkeypatch):
         from agents import decision_agent as da
 

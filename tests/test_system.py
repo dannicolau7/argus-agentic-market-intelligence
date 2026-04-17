@@ -83,10 +83,10 @@ class TestCircuitBreaker:
 class TestWorldContext:
     def setup_method(self):
         import world_context as wctx
-        # Reset to defaults
-        wctx._ctx["geo"]["updated_at"]    = None
-        wctx._ctx["macro"]["updated_at"]  = None
-        wctx._ctx["macro"]["regime"]      = "UNKNOWN"
+        import copy
+        # Reset entire context to defaults so disk-persisted data doesn't bleed in
+        with wctx._lock:
+            wctx._ctx = copy.deepcopy(wctx._CTX_DEFAULT)
 
     def test_update_and_read_macro(self):
         import world_context as wctx
