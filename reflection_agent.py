@@ -125,12 +125,12 @@ def _compute_signal_weights(rows: list, stats_30: dict) -> dict:
 
 # ── Core reflection ───────────────────────────────────────────────────────────
 
-def _run_reflection(paper: bool = False) -> dict:
+def _run_reflection() -> dict:
     """Ask Claude Sonnet to analyze signal history and extract learnings."""
     print("🧠 [Reflection] Running daily signal review...")
 
-    stats_30 = pt.get_stats(lookback_days=30, paper=paper)
-    stats_7  = pt.get_stats(lookback_days=7,  paper=paper)
+    stats_30 = pt.get_stats(lookback_days=30)
+    stats_7  = pt.get_stats(lookback_days=7)
 
     if stats_30.get("total", 0) < 3:
         print("🧠 [Reflection] Not enough signals yet (need ≥3). Skipping.")
@@ -149,11 +149,11 @@ def _run_reflection(paper: bool = False) -> dict:
             FROM signals s
             JOIN outcomes o ON o.signal_id = s.id
             WHERE s.fired_at >= date('now', '-30 days')
-              AND s.paper = ?
+              AND s.paper = 0
               AND o.win IS NOT NULL
               AND o.checkpoint = '3d'
             ORDER BY s.fired_at DESC
-        """, (int(paper),)).fetchall()
+        """).fetchall()
 
     if not rows:
         print("🧠 [Reflection] No completed 3d outcomes yet.")
@@ -249,11 +249,8 @@ Respond ONLY with valid JSON:
         return {}
 
 
-def _send_daily_summary(result: dict, stats: dict, paper: bool = False):
+def _send_daily_summary(result: dict, stats: dict):
     """Send daily performance WhatsApp to user."""
-    if paper:
-        return
-
     win_rate  = stats.get("win_rate", "?")
     total     = stats.get("total", 0)
     avg_ret   = stats.get("by_checkpoint", {}).get("3d", {}).get("avg_ret", 0)
@@ -282,16 +279,14 @@ def _send_daily_summary(result: dict, stats: dict, paper: bool = False):
 
     # ── Weekly report (every Sunday) ──────────────────────────────────────────
     if datetime.now(ET).weekday() == 6:   # Sunday
-        _send_weekly_report(stats, paper)
+        _send_weekly_report(stats)
 
 
-def _send_weekly_report(stats: dict, paper: bool = False):
+def _send_weekly_report(stats: dict):
     """Send weekly performance WhatsApp every Sunday."""
-    if paper:
-        return
     try:
-        stats_7  = pt.get_stats(lookback_days=7,  paper=paper)
-        stats_30 = pt.get_stats(lookback_days=30, paper=paper)
+        stats_7  = pt.get_stats(lookback_days=7)
+        stats_30 = pt.get_stats(lookback_days=30)
         weights  = hub.get_reflection_weights()
         boosted  = [f"{k} ×{v:.1f}" for k, v in weights.items() if v > 1.05]
         reduced  = [f"{k} ×{v:.1f}" for k, v in weights.items() if v < 0.95]
@@ -310,7 +305,7 @@ def _send_weekly_report(stats: dict, paper: bool = False):
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
-async def reflection_agent_loop(paper: bool = False):
+async def reflection_agent_loop():
     """
     Runs once per day at 4:15 PM ET (after market close).
     On first startup, runs immediately if after 4 PM.
@@ -331,10 +326,10 @@ async def reflection_agent_loop(paper: bool = False):
             await asyncio.sleep(wait_s)
 
             loop   = asyncio.get_running_loop()
-            result = await loop.run_in_executor(None, _run_reflection, paper)
+            result = await loop.run_in_executor(None, _run_reflection)
             if result:
-                stats = pt.get_stats(lookback_days=30, paper=paper)
-                _send_daily_summary(result, stats, paper=paper)
+                stats = pt.get_stats(lookback_days=30)
+                _send_daily_summary(result, stats)
 
         except asyncio.CancelledError:
             print("🧠 [Reflection] Stopped.")
@@ -358,7 +353,7 @@ if __name__ == "__main__":
     print(f"Insights: {learnings.get('insights', [])}")
 
     print("\nRunning reflection (needs ≥3 completed signals to do anything)...")
-    result = _run_reflection(paper=False)
+    result = _run_reflection()
     if result:
         print(f"\nResult: {json.dumps(result, indent=2)}")
     else:

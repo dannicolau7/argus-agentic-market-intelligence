@@ -65,18 +65,18 @@ def _in_window(hour: int, minute: int, window_min: int = 3) -> bool:
 
 # ── Graph runner (off-hours) ───────────────────────────────────────────────────
 
-def _run_graph_sync(ticker: str, paper: bool) -> dict:
-    return GRAPH.invoke(make_initial_state(ticker, paper_trading=paper))
+def _run_graph_sync(ticker: str) -> dict:
+    return GRAPH.invoke(make_initial_state(ticker))
 
 
-async def _run_ticker(ticker: str, paper: bool) -> dict:
+async def _run_ticker(ticker: str) -> dict:
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_executor, _run_graph_sync, ticker, paper)
+    return await loop.run_in_executor(_executor, _run_graph_sync, ticker)
 
 
 # ── Scheduled events ──────────────────────────────────────────────────────────
 
-async def _run_off_hours_scan(event_name: str, paper: bool,
+async def _run_off_hours_scan(event_name: str,
                                alert_threshold: int, label: str,
                                daily_log: list):
     tickers = wl.load()
@@ -88,7 +88,7 @@ async def _run_off_hours_scan(event_name: str, paper: bool,
         if i > 0:
             await asyncio.sleep(20)   # Polygon rate limit buffer
         try:
-            result = await _run_ticker(ticker, paper)
+            result = await _run_ticker(ticker)
             conf   = result.get("confidence", 0)
             sig    = result.get("signal", "HOLD")
             price  = result.get("current_price", 0.0)
@@ -104,10 +104,7 @@ async def _run_off_hours_scan(event_name: str, paper: bool,
                     f"Stop: ${result.get('stop_loss', 0):.2f}\n"
                     f"{result.get('reasoning', '')[:200]}"
                 )
-                if not paper:
-                    send_whatsapp(msg)
-                else:
-                    print(f"📋 [PAPER] Would send:\n{msg}")
+                send_whatsapp(msg)
                 fired_count += 1
 
         except Exception as e:
@@ -118,7 +115,7 @@ async def _run_off_hours_scan(event_name: str, paper: bool,
     print(f"{'─'*50}\n")
 
 
-async def _run_morning_sweep(paper: bool):
+async def _run_morning_sweep():
     """
     7:45 AM — Best-of-Day selection pipeline.
     Pre-seeds universe with pre-market gappers (daily RVOL is ~0 before open,
@@ -152,11 +149,8 @@ async def _run_morning_sweep(paper: bool):
             f"{hot_str}\n"
             f"Running Best-of-Day scan now... 🔍"
         )
-        if not paper:
-            from alerts import send_whatsapp
-            send_whatsapp(hb_msg)
-        else:
-            print(f"📋 [PAPER] Heartbeat:\n{hb_msg}")
+        from alerts import send_whatsapp
+        send_whatsapp(hb_msg)
     except Exception as _hb_err:
         print(f"⚠️  [7:45 AM] Heartbeat failed: {_hb_err}")
 
@@ -177,7 +171,6 @@ async def _run_morning_sweep(paper: bool):
     result = await loop.run_in_executor(
         _executor,
         lambda: scan_best_of_day(
-            paper=paper,
             verbose=False,
             extra_tickers=extra,
             min_score=75,          # lower threshold at 7:45 AM
@@ -190,7 +183,7 @@ async def _run_morning_sweep(paper: bool):
     print(f"✅ [7:45 AM] Best-of-Day complete. Winner: {top}")
 
 
-async def _run_early_gap_check(hour: int, minute: int, paper: bool,
+async def _run_early_gap_check(hour: int, minute: int,
                                mode: str = "quick", gap_threshold: float = 3.0):
     """
     Quick gap scan on watchlist — fires only for large movers (gap ≥ gap_threshold).
@@ -217,15 +210,14 @@ async def _run_early_gap_check(hour: int, minute: int, paper: bool,
         if big:
             msg = format_premarket_msg(big[:3])
             print(f"🔔 [{label}] {len(big)} big mover(s) found:\n{msg}")
-            if not paper:
-                send_whatsapp(msg)
+            send_whatsapp(msg)
         else:
             print(f"💤 [{label}] No movers ≥ {gap_threshold}% yet.")
     except Exception as e:
         print(f"❌ [{label}] Gap check error: {e}")
 
 
-async def _run_premarket_scan(paper: bool):
+async def _run_premarket_scan():
     """8:30 AM — scan for pre-market gap movers and alert via WhatsApp."""
     print(f"\n{'─'*50}")
     print("⚡ [8:30 AM] Running pre-market gap scanner...")
@@ -244,27 +236,26 @@ async def _run_premarket_scan(paper: bool):
         if gaps:
             msg = format_premarket_msg(gaps[:3])
             print(f"✅ [8:30 AM] {len(gaps)} gap(s) found:\n{msg}")
-            if not paper:
-                send_whatsapp(msg)
+            send_whatsapp(msg)
         else:
             print("✅ [8:30 AM] No qualifying pre-market gaps today.")
     except Exception as e:
         print(f"❌ [8:30 AM] Pre-market scan error: {e}")
 
 
-async def _run_morning_digest(paper: bool):
+async def _run_morning_digest():
     """8:00 AM — WhatsApp morning digest: movers + macro + today's picks."""
     print(f"\n{'─'*50}")
     print("☀️  [8:00 AM] Sending morning digest...")
     try:
         from premarket_scanner import send_morning_digest
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(_executor, send_morning_digest, paper)
+        await loop.run_in_executor(_executor, send_morning_digest)
     except Exception as e:
         print(f"❌ [8:00 AM] Morning digest error: {e}")
 
 
-async def _run_broad_premarket_scan(paper: bool):
+async def _run_broad_premarket_scan():
     """8:45 AM — Full broad pre-market scan with Claude analysis."""
     print(f"\n{'─'*50}")
     print("🌅 [8:45 AM] Running broad pre-market scan (Claude analysis)...")
@@ -273,13 +264,13 @@ async def _run_broad_premarket_scan(paper: bool):
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             _executor,
-            lambda: run_premarket_scan(mode="broad", test=paper, verbose=False, save_prep=True),
+            lambda: run_premarket_scan(mode="broad", test=False, verbose=False, save_prep=True),
         )
     except Exception as e:
         print(f"❌ [8:45 AM] Broad pre-market scan error: {e}")
 
 
-async def _run_prep_alert(paper: bool):
+async def _run_prep_alert():
     """9:10 AM — Final prep scan + save prep_alert_list.json + send PREP alerts."""
     print(f"\n{'─'*50}")
     print("🎯 [9:10 AM] Running PREP alert scan...")
@@ -288,13 +279,13 @@ async def _run_prep_alert(paper: bool):
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             _executor,
-            lambda: run_premarket_scan(mode="broad", test=paper, verbose=False, save_prep=True),
+            lambda: run_premarket_scan(mode="broad", test=False, verbose=False, save_prep=True),
         )
     except Exception as e:
         print(f"❌ [9:10 AM] Prep alert error: {e}")
 
 
-async def _run_confirmation_alert(paper: bool):
+async def _run_confirmation_alert():
     """9:25 AM — Re-check prep list → STILL BUY / WEAKENED / STAND DOWN."""
     print(f"\n{'─'*50}")
     print("⏰ [9:25 AM] Running pre-market confirmation check...")
@@ -303,13 +294,13 @@ async def _run_confirmation_alert(paper: bool):
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             _executor,
-            lambda: run_confirmation_check(test=paper, verbose=False),
+            lambda: run_confirmation_check(test=False, verbose=False),
         )
     except Exception as e:
         print(f"❌ [9:25 AM] Confirmation check error: {e}")
 
 
-async def _send_market_opens_soon(paper: bool):
+async def _send_market_opens_soon():
     """Fallback 9:25 AM message used only if confirmation check is skipped."""
     top = _sweep_results[:2] if _sweep_results else []
     watch_lines = "\n".join(
@@ -322,13 +313,10 @@ async def _send_market_opens_soon(paper: bool):
         f"Top watch today:\n{watch_lines}\n\n"
         f"Stay sharp! 👀"
     )
-    if not paper:
-        send_whatsapp(msg)
-    else:
-        print(f"📋 [PAPER] Pre-market alert:\n{msg}")
+    send_whatsapp(msg)
 
 
-async def _send_market_closed(paper: bool, daily_log: list, signal_memory: dict):
+async def _send_market_closed(daily_log: list, signal_memory: dict):
     today  = _today()
     sigs   = [e for e in daily_log if e.get("timestamp", "")[:10] == today]
 
@@ -348,13 +336,10 @@ async def _send_market_closed(paper: bool, daily_log: list, signal_memory: dict)
             lines.append(f"  {m['signal']} {ticker} @ ${m['price']:.2f} | SL ${m['stop_loss']:.2f}")
 
     msg = "\n".join(lines)
-    if not paper:
-        send_whatsapp(msg)
-    else:
-        print(f"📋 [PAPER] Market closed:\n{msg}")
+    send_whatsapp(msg)
 
 
-async def _send_daily_report(paper: bool, daily_log: list):
+async def _send_daily_report(daily_log: list):
     today  = _today()
     sigs   = [e for e in daily_log if e.get("timestamp", "")[:10] == today]
 
@@ -367,18 +352,12 @@ async def _send_daily_report(paper: bool, daily_log: list):
             icon = "🟢" if s["signal"] == "BUY" else "🔴"
             lines.append(f"  {icon} {s['signal']} {s['ticker']} @ ${s['price']:.2f}  conf={s['confidence']}")
 
-    if paper:
-        lines.append("\n📋 PAPER TRADING MODE")
-
     msg = "\n".join(lines)
-    if not paper:
-        send_whatsapp(msg)
-    else:
-        print(f"📋 [PAPER] Daily report:\n{msg}")
+    send_whatsapp(msg)
     print("\n" + "─"*50 + "\n" + msg + "\n" + "─"*50 + "\n")
 
 
-async def _send_good_night(paper: bool, daily_log: list):
+async def _send_good_night(daily_log: list):
     today = _today()
     sigs  = [e for e in daily_log if e.get("timestamp", "")[:10] == today]
     msg   = (
@@ -388,11 +367,7 @@ async def _send_good_night(paper: bool, daily_log: list):
         f"- Scans completed: {sum(1 for v in _fired_today.values() if v == today)}\n\n"
         f"Agent will restart at 3:00 AM.\nSleep well! 😴"
     )
-    if not paper:
-        send_whatsapp(msg)
-    else:
-        print(f"📋 [PAPER] Good night:\n{msg}")
-
+    send_whatsapp(msg)
     print("🌙 [Scheduler] Good night — shutting down agent...")
     await asyncio.sleep(2)
     os.kill(os.getpid(), signal.SIGTERM)
@@ -400,7 +375,7 @@ async def _send_good_night(paper: bool, daily_log: list):
 
 # ── Main scheduler loop ────────────────────────────────────────────────────────
 
-async def scheduler_loop(paper: bool, daily_log: list, signal_memory: dict):
+async def scheduler_loop(daily_log: list, signal_memory: dict):
     print("🗓️  [Scheduler] Started — polling every 30s")
     while True:
         try:
@@ -412,7 +387,7 @@ async def scheduler_loop(paper: bool, daily_log: list, signal_memory: dict):
                 _mark_fired("overnight_news")
                 hub.reset_daily()   # clear alert dedup so each ticker can fire once today
                 await _run_off_hours_scan(
-                    "overnight_news", paper,
+                    "overnight_news",
                     alert_threshold=85,
                     label="3:00 AM OVERNIGHT",
                     daily_log=daily_log,
@@ -421,12 +396,12 @@ async def scheduler_loop(paper: bool, daily_log: list, signal_memory: dict):
             # ── 4:00 AM — Early gap check (watchlist, big movers ≥ 5%)
             if weekday and _in_window(4, 0) and _should_fire("early_gap_4am"):
                 _mark_fired("early_gap_4am")
-                await _run_early_gap_check(4, 0, paper, mode="quick", gap_threshold=5.0)
+                await _run_early_gap_check(4, 0, mode="quick", gap_threshold=5.0)
 
             # ── 6:00 AM — Broader gap check (watchlist + universe[:50])
             if weekday and _in_window(6, 0) and _should_fire("early_gap_6am"):
                 _mark_fired("early_gap_6am")
-                await _run_early_gap_check(6, 0, paper, mode="broad", gap_threshold=3.0)
+                await _run_early_gap_check(6, 0, mode="broad", gap_threshold=3.0)
 
             # ── 7:30 AM — Quick Claude scan on watchlist gappers
             if weekday and _in_window(7, 30) and _should_fire("quick_pm_scan_730"):
@@ -436,7 +411,7 @@ async def scheduler_loop(paper: bool, daily_log: list, signal_memory: dict):
                     loop = asyncio.get_running_loop()
                     await loop.run_in_executor(
                         _executor,
-                        lambda: run_premarket_scan(mode="quick", test=paper, verbose=False, save_prep=False),
+                        lambda: run_premarket_scan(mode="quick", test=False, verbose=False, save_prep=False),
                     )
                 except Exception as _e:
                     print(f"❌ [7:30 AM] Quick pre-market scan error: {_e}")
@@ -444,32 +419,32 @@ async def scheduler_loop(paper: bool, daily_log: list, signal_memory: dict):
             # ── 7:45 AM — Best-of-Day selection (includes WhatsApp send)
             if weekday and _in_window(7, 45) and _should_fire("morning_sweep"):
                 _mark_fired("morning_sweep")
-                await _run_morning_sweep(paper)
+                await _run_morning_sweep()
 
             # ── 8:00 AM — Morning digest
             if weekday and _in_window(8, 0) and _should_fire("morning_digest"):
                 _mark_fired("morning_digest")
-                await _run_morning_digest(paper)
+                await _run_morning_digest()
 
             # ── 8:30 AM — Pre-market gap scan (dashboard cache)
             if weekday and _in_window(8, 30) and _should_fire("premarket_gaps"):
                 _mark_fired("premarket_gaps")
-                await _run_premarket_scan(paper)
+                await _run_premarket_scan()
 
             # ── 8:45 AM — Broad pre-market scan with Claude analysis
             if weekday and _in_window(8, 45) and _should_fire("broad_pm_scan"):
                 _mark_fired("broad_pm_scan")
-                await _run_broad_premarket_scan(paper)
+                await _run_broad_premarket_scan()
 
             # ── 9:10 AM — Final PREP alert (save prep_alert_list.json)
             if weekday and _in_window(9, 10) and _should_fire("prep_alert"):
                 _mark_fired("prep_alert")
-                await _run_prep_alert(paper)
+                await _run_prep_alert()
 
             # ── 9:25 AM — Confirmation check (STILL BUY / WEAKENED / STAND DOWN)
             if weekday and _in_window(9, 25) and _should_fire("market_opens_soon"):
                 _mark_fired("market_opens_soon")
-                await _run_confirmation_alert(paper)
+                await _run_confirmation_alert()
 
             # ── 3:30 PM — EOD pre-close scan (accumulation / coiling / bounce)
             if weekday and _in_window(15, 30) and _should_fire("eod_preclose"):
@@ -477,14 +452,14 @@ async def scheduler_loop(paper: bool, daily_log: list, signal_memory: dict):
                 try:
                     from eod_scanner import run_preclose_scan
                     loop = asyncio.get_running_loop()
-                    await loop.run_in_executor(_executor, lambda: run_preclose_scan(test=paper))
+                    await loop.run_in_executor(_executor, lambda: run_preclose_scan(test=False))
                 except Exception as _e:
                     print(f"❌ [3:30 PM] EOD pre-close error: {_e}")
 
             # ── 4:00 PM — Market closed
             if weekday and _in_window(16, 0) and _should_fire("market_closed"):
                 _mark_fired("market_closed")
-                await _send_market_closed(paper, daily_log, signal_memory)
+                await _send_market_closed(daily_log, signal_memory)
 
             # ── 4:15 PM — EOD after-close (earnings releases + EDGAR 8-Ks)
             if weekday and _in_window(16, 15) and _should_fire("eod_afterclose"):
@@ -492,14 +467,14 @@ async def scheduler_loop(paper: bool, daily_log: list, signal_memory: dict):
                 try:
                     from eod_scanner import run_afterclose_scan
                     loop = asyncio.get_running_loop()
-                    await loop.run_in_executor(_executor, lambda: run_afterclose_scan(test=paper))
+                    await loop.run_in_executor(_executor, lambda: run_afterclose_scan(test=False))
                 except Exception as _e:
                     print(f"❌ [4:15 PM] EOD after-close error: {_e}")
 
             # ── 4:30 PM — Daily report
             if weekday and _in_window(16, 30) and _should_fire("daily_report"):
                 _mark_fired("daily_report")
-                await _send_daily_report(paper, daily_log)
+                await _send_daily_report(daily_log)
 
             # ── 6:00 PM — EOD evening scan (AH prices + news finalization)
             if weekday and _in_window(18, 0) and _should_fire("eod_evening"):
@@ -507,7 +482,7 @@ async def scheduler_loop(paper: bool, daily_log: list, signal_memory: dict):
                 try:
                     from eod_scanner import run_evening_scan
                     loop = asyncio.get_running_loop()
-                    await loop.run_in_executor(_executor, lambda: run_evening_scan(test=paper))
+                    await loop.run_in_executor(_executor, lambda: run_evening_scan(test=False))
                 except Exception as _e:
                     print(f"❌ [6:00 PM] EOD evening scan error: {_e}")
 
@@ -517,7 +492,7 @@ async def scheduler_loop(paper: bool, daily_log: list, signal_memory: dict):
                 try:
                     from eod_scanner import run_final_overnight
                     loop = asyncio.get_running_loop()
-                    await loop.run_in_executor(_executor, lambda: run_final_overnight(test=paper))
+                    await loop.run_in_executor(_executor, lambda: run_final_overnight(test=False))
                 except Exception as _e:
                     print(f"❌ [8:00 PM] EOD final overnight error: {_e}")
 
@@ -525,7 +500,7 @@ async def scheduler_loop(paper: bool, daily_log: list, signal_memory: dict):
             if weekday and _in_window(22, 0) and _should_fire("final_scan"):
                 _mark_fired("final_scan")
                 await _run_off_hours_scan(
-                    "final_scan", paper,
+                    "final_scan",
                     alert_threshold=85,
                     label="10:00 PM FINAL",
                     daily_log=daily_log,
@@ -534,7 +509,7 @@ async def scheduler_loop(paper: bool, daily_log: list, signal_memory: dict):
             # ── 11:00 PM — Good night + shutdown
             if weekday and _in_window(23, 0) and _should_fire("good_night"):
                 _mark_fired("good_night")
-                await _send_good_night(paper, daily_log)
+                await _send_good_night(daily_log)
                 return
 
         except Exception as e:

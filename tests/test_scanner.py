@@ -114,7 +114,7 @@ class TestScanBestOfDay:
         with patch.multiple("market_scanner", **{
             k.split(".", 1)[1]: v for k, v in patches.items()
         }):
-            result = scan_best_of_day(paper=True)
+            result = scan_best_of_day()
 
         return result
 
@@ -157,5 +157,5 @@ class TestScanBestOfDay:
             _bulk_download_batched=MagicMock(return_value={}),  # empty — no data
             _load_alerted_today=MagicMock(return_value=set()),
         ):
-            result = scan_best_of_day(paper=True)
+            result = scan_best_of_day()
         assert result == {}

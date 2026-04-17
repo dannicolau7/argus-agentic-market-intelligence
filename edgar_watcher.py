@@ -30,7 +30,7 @@ import requests
 from news_watcher import _quick_gate, _already_alerted, _mark_alerted
 
 
-def _run_edgar_pipeline(ticker: str, paper: bool, company_name: str,
+def _run_edgar_pipeline(ticker: str, company_name: str,
                         filing_type: str = "8-K") -> dict:
     """
     Run the full LangGraph pipeline with EDGAR context injected into state.
@@ -38,7 +38,7 @@ def _run_edgar_pipeline(ticker: str, paper: bool, company_name: str,
     edgar_filing bullish signal and never skips Claude on 8-K events.
     """
     from graph import GRAPH, make_initial_state
-    state = make_initial_state(ticker, paper_trading=paper)
+    state = make_initial_state(ticker)
     state.update({
         "has_edgar_filing":   True,
         "edgar_filing_type":  filing_type,
@@ -139,15 +139,14 @@ def _fetch_8k_feed() -> list:
 
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
-async def edgar_watcher_loop(run_pipeline_fn=None, paper: bool = False):
+async def edgar_watcher_loop(run_pipeline_fn=None):
     """
     Async loop started in main.py lifespan.
 
     run_pipeline_fn is unused (kept for API symmetry) — we call
     news_watcher._run_pipeline directly so we share its _alerted_at state.
     """
-    mode = "PAPER" if paper else "LIVE"
-    print(f"📋 [EDGAR] Started — polling every {EDGAR_INTERVAL}s | {mode}")
+    print(f"📋 [EDGAR] Started — polling every {EDGAR_INTERVAL}s")
 
     loop = asyncio.get_running_loop()
 
@@ -210,7 +209,7 @@ async def edgar_watcher_loop(run_pipeline_fn=None, paper: bool = False):
                 # Full pipeline with EDGAR context injected
                 try:
                     result = await loop.run_in_executor(
-                        None, _run_edgar_pipeline, ticker, paper, company_name
+                        None, _run_edgar_pipeline, ticker, company_name
                     )
                     signal = result.get("signal", "HOLD")
                     conf   = result.get("confidence", 0)

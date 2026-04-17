@@ -1,13 +1,11 @@
 """
 alert_agent.py — LangGraph node: fires SMS via Twilio + push via Pushover using alerts.py.
-Respects paper_trading flag (logs only, no real alerts).
 Only fires when should_alert is True.
 
 alert_reason_code values:
   duplicate_position  — same ticker already has an active BUY in signal_memory
   duplicate_today     — same (ticker, signal) already fired today (SQLite-persistent)
   threshold_blocked   — should_alert=False (confidence < threshold or risk veto)
-  paper_mode          — paper_trading=True, alert suppressed
   delivery_failed     — send_alert returned False
   sent                — alert delivered successfully
 """
@@ -42,7 +40,6 @@ def alert_node(state: dict) -> dict:
     signal        = state.get("signal", "HOLD")
     confidence    = state.get("confidence", 0)
     should_alert  = state.get("should_alert", False)
-    paper_trading = state.get("paper_trading", False)
     ticker        = state["ticker"]
     price         = _fresh_price(
         ticker,
@@ -56,7 +53,7 @@ def alert_node(state: dict) -> dict:
         return {**state, "alert_sent": False, "alert_reason_code": "duplicate_position"}
 
     # ── Idempotency gate — persistent across restarts (SQLite) ─────────────────
-    if signal in ("BUY", "SELL") and pt.is_alert_fired(ticker, signal, paper=paper_trading):
+    if signal in ("BUY", "SELL") and pt.is_alert_fired(ticker, signal):
         print(f"🔕 [AlertAgent] {ticker} {signal} — idempotency gate (already fired today)")
         return {**state, "alert_sent": False, "alert_reason_code": "duplicate_today"}
 
@@ -72,13 +69,6 @@ def alert_node(state: dict) -> dict:
         else:
             print(f"🟡 [AlertAgent] HOLD conf={confidence}/100 — no alert needed")
         return {**state, "alert_sent": False, "alert_reason_code": "threshold_blocked"}
-
-    if paper_trading:
-        print(
-            f"📋 [AlertAgent] PAPER MODE — {signal} on {ticker} @ ${price:.4f}  "
-            f"conf={confidence}/100  (alerts suppressed)"
-        )
-        return {**state, "alert_sent": False, "alert_reason_code": "paper_mode"}
 
     try:
         emoji = "🟢" if signal == "BUY" else "🔴"
@@ -148,7 +138,7 @@ def alert_node(state: dict) -> dict:
         )
         if sent:
             print("✅ [AlertAgent] Delivered via WhatsApp + Push")
-            pt.mark_alert_fired(ticker, signal, paper=paper_trading)
+            pt.mark_alert_fired(ticker, signal)
             pt.record_signal(state)
             from intelligence_hub import hub
             hub.mark_alerted(ticker, signal)

@@ -78,6 +78,27 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_signals_ticker ON signals(ticker);
             CREATE INDEX IF NOT EXISTS idx_signals_fired  ON signals(fired_at);
             CREATE INDEX IF NOT EXISTS idx_outcomes_sig   ON outcomes(signal_id);
+
+            CREATE TABLE IF NOT EXISTS fired_alerts (
+                ticker     TEXT    NOT NULL,
+                signal     TEXT    NOT NULL,
+                paper      INTEGER NOT NULL DEFAULT 0,
+                fired_date TEXT    NOT NULL,
+                PRIMARY KEY (ticker, signal, paper, fired_date)
+            );
+
+            CREATE TABLE IF NOT EXISTS decision_audit (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker              TEXT    NOT NULL,
+                fired_at            TEXT    NOT NULL,
+                deterministic_score INTEGER,
+                model_signal        TEXT,
+                model_confidence    INTEGER,
+                threshold_used      INTEGER,
+                final_signal        TEXT,
+                decision_delta      TEXT,
+                paper               INTEGER DEFAULT 0
+            );
         """)
         # Migrate existing databases — ADD COLUMN is idempotent via try/except
         for ddl in (
@@ -88,6 +109,68 @@ def init_db():
                 conn.execute(ddl)
             except Exception:
                 pass   # column already exists
+
+
+# ── Persistent alert idempotency ──────────────────────────────────────────────
+
+def is_alert_fired(ticker: str, signal: str) -> bool:
+    """True if this (ticker, signal) already fired today — survives restarts."""
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        with _get_conn() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM fired_alerts WHERE ticker=? AND signal=? AND paper=0 AND fired_date=?",
+                (ticker, signal, today),
+            ).fetchone()
+        return row is not None
+    except Exception:
+        return False   # fail open — never block on DB error
+
+
+def mark_alert_fired(ticker: str, signal: str):
+    """Persist that this alert fired today. INSERT OR IGNORE is idempotent."""
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        with _get_conn() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO fired_alerts (ticker, signal, paper, fired_date) VALUES (?,?,0,?)",
+                (ticker, signal, today),
+            )
+    except Exception:
+        pass   # non-fatal
+
+
+# ── Persistent decision audit ─────────────────────────────────────────────────
+
+def record_decision_audit(state: dict):
+    """
+    Save one audit row per pipeline run capturing deterministic score,
+    model output, threshold, and final decision. Non-fatal on failure.
+    """
+    try:
+        ticker = state.get("ticker", "")
+        score_bd = state.get("score_breakdown", {})
+        det_score = score_bd.get("final_score") or score_bd.get("raw_score")
+        delta = state.get("decision_delta", "")
+        with _get_conn() as conn:
+            conn.execute("""
+                INSERT INTO decision_audit
+                    (ticker, fired_at, deterministic_score, model_signal,
+                     model_confidence, threshold_used, final_signal, decision_delta, paper)
+                VALUES (?,?,?,?,?,?,?,?,?)
+            """, (
+                ticker,
+                datetime.now().isoformat(),
+                det_score,
+                state.get("model_signal"),
+                state.get("model_confidence"),
+                state.get("threshold_used"),
+                state.get("signal"),
+                delta,
+                0,
+            ))
+    except Exception:
+        pass   # non-fatal
 
 
 # ── Record a new signal ───────────────────────────────────────────────────────
@@ -130,7 +213,7 @@ def record_signal(state: dict) -> int | None:
         "sentiment":      state.get("news_sentiment", "NEUTRAL"),
         "reasoning":      state.get("reasoning", "")[:300],
         "fired_at":       datetime.now().isoformat(),
-        "paper":          int(state.get("paper_trading", False)),
+        "paper":          0,
         "sector":         state.get("sector", ""),
         "avg_volume":     state.get("avg_volume", 0.0),
     }
@@ -249,7 +332,7 @@ def _price_at(prices: dict, target_dt: datetime) -> float | None:
 
 # ── Statistics for reflection agent ──────────────────────────────────────────
 
-def get_stats(lookback_days: int = 30, paper: bool = False) -> dict:
+def get_stats(lookback_days: int = 30) -> dict:
     """
     Returns win rates, average returns, and best/worst setup conditions
     for signals fired in the last `lookback_days`.
@@ -265,10 +348,10 @@ def get_stats(lookback_days: int = 30, paper: bool = False) -> dict:
             FROM signals s
             JOIN outcomes o ON o.signal_id = s.id
             WHERE s.fired_at >= ?
-              AND s.paper = ?
+              AND s.paper = 0
               AND o.win IS NOT NULL
             ORDER BY s.fired_at DESC
-        """, (since, int(paper))).fetchall()
+        """, (since,)).fetchall()
 
     if not rows:
         return {"total": 0, "message": "No completed signals yet"}
@@ -324,7 +407,7 @@ def get_stats(lookback_days: int = 30, paper: bool = False) -> dict:
 
 # ── Open signals (for portfolio agent) ───────────────────────────────────────
 
-def get_open_signals(paper: bool = False) -> list[dict]:
+def get_open_signals() -> list[dict]:
     """
     Returns BUY signals fired in the last 14 days that have no 7d outcome yet
     — i.e. positions that are still potentially open.
@@ -338,12 +421,12 @@ def get_open_signals(paper: bool = False) -> list[dict]:
             FROM signals s
             WHERE s.signal = 'BUY'
               AND s.fired_at >= ?
-              AND s.paper = ?
+              AND s.paper = 0
               AND s.id NOT IN (
                   SELECT signal_id FROM outcomes WHERE checkpoint='7d' AND win IS NOT NULL
               )
             ORDER BY s.fired_at DESC
-        """, (since, int(paper))).fetchall()
+        """, (since,)).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -390,7 +473,6 @@ if __name__ == "__main__":
         "volume_spike":  True,
         "news_sentiment": "BULLISH",
         "reasoning":     "Test signal",
-        "paper_trading": False,
     }
     sig_id = record_signal(fake_state)
     print(f"Inserted test signal id={sig_id}")

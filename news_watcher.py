@@ -142,9 +142,9 @@ def _mark_alerted(ticker: str):
 
 # ── Pipeline ───────────────────────────────────────────────────────────────────
 
-def _run_pipeline(ticker: str, paper: bool, news_triggered: bool = True) -> dict:
+def _run_pipeline(ticker: str, news_triggered: bool = True) -> dict:
     """Run the full LangGraph pipeline. news_triggered=True lowers confidence threshold to 55."""
-    state = make_initial_state(ticker, paper_trading=paper)
+    state = make_initial_state(ticker)
     state["news_triggered"] = news_triggered
     return GRAPH.invoke(state)
 
@@ -179,7 +179,7 @@ def _format_alert(result: dict, headline: str) -> str:
 
 # ── Yahoo Finance news watcher (90-second poll, watchlist tickers only) ────────
 
-async def _check_yf_ticker_news(ticker: str, paper: bool, loop) -> None:
+async def _check_yf_ticker_news(ticker: str, loop) -> None:
     """
     Fetch Yahoo Finance news for one ticker and run the pipeline if a new
     article is found. Shares _alerted_at and _quick_gate with Polygon watcher.
@@ -215,7 +215,7 @@ async def _check_yf_ticker_news(ticker: str, paper: bool, loop) -> None:
 
     try:
         result = await loop.run_in_executor(
-            _executor, _run_pipeline, ticker, paper, True
+            _executor, _run_pipeline, ticker, True
         )
         signal = result.get("signal", "HOLD")
         conf   = result.get("confidence", 0)
@@ -225,18 +225,15 @@ async def _check_yf_ticker_news(ticker: str, paper: bool, loop) -> None:
         if signal in ("BUY", "SELL") and conf >= CONFIDENCE_THRESHOLD:
             msg = _format_alert(result, headline)
             _mark_alerted(ticker)
-            if not paper:
-                send_whatsapp(msg)
-                print(f"   ✅ [YF-News] Alert sent for {ticker}")
-            else:
-                print(f"   📋 [YF-News] PAPER — would send:\n{msg}")
+            send_whatsapp(msg)
+            print(f"   ✅ [YF-News] Alert sent for {ticker}")
         else:
             print(f"   💤 [YF-News] {ticker} → below threshold ({CONFIDENCE_THRESHOLD})")
     except Exception as e:
         print(f"   ❌ [YF-News] Pipeline error for {ticker}: {e}")
 
 
-async def yf_news_watcher_loop(paper: bool = False):
+async def yf_news_watcher_loop():
     """
     Polls Yahoo Finance news every 90 seconds for:
       - All watchlist tickers (always, every cycle)
@@ -246,8 +243,7 @@ async def yf_news_watcher_loop(paper: bool = False):
     Much faster than Polygon for breaking news (2–5 min lag vs 15–45 min).
     Shares _alerted_at cooldown with Polygon and EDGAR watchers.
     """
-    mode = "PAPER" if paper else "LIVE"
-    print(f"📰 [YF-News] Started — poll every 90s | {mode}")
+    print("📰 [YF-News] Started — poll every 90s")
     loop = asyncio.get_running_loop()
 
     # Load universe lazily in background
@@ -283,7 +279,7 @@ async def yf_news_watcher_loop(paper: bool = False):
             tickers = list(dict.fromkeys(watchlist + chunk))
 
             for ticker in tickers:
-                await _check_yf_ticker_news(ticker, paper, loop)
+                await _check_yf_ticker_news(ticker, loop)
 
         except asyncio.CancelledError:
             print("📰 [YF-News] Stopped.")
@@ -295,13 +291,12 @@ async def yf_news_watcher_loop(paper: bool = False):
 
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
-async def news_watcher_loop(paper: bool = False):
+async def news_watcher_loop():
     """
     Async loop started in main.py lifespan alongside monitoring and scheduler.
     Runs forever until cancelled.
     """
-    mode = "PAPER" if paper else "LIVE"
-    print(f"📡 [NewsWatcher] Started — poll every {POLL_INTERVAL_S//60}min | {mode}")
+    print(f"📡 [NewsWatcher] Started — poll every {POLL_INTERVAL_S//60}min")
 
     loop = asyncio.get_running_loop()
 
@@ -376,7 +371,7 @@ async def news_watcher_loop(paper: bool = False):
 
                 try:
                     result = await loop.run_in_executor(
-                        _executor, _run_pipeline, ticker, paper
+                        _executor, _run_pipeline, ticker
                     )
 
                     signal = result.get("signal", "HOLD")
@@ -388,11 +383,8 @@ async def news_watcher_loop(paper: bool = False):
                     if signal in ("BUY", "SELL") and conf >= CONFIDENCE_THRESHOLD:
                         msg = _format_alert(result, headline)
                         _mark_alerted(ticker)
-                        if not paper:
-                            send_whatsapp(msg)
-                            print(f"   ✅ [NewsWatcher] WhatsApp sent for {ticker}")
-                        else:
-                            print(f"   📋 [NewsWatcher] PAPER — would send:\n{msg}")
+                        send_whatsapp(msg)
+                        print(f"   ✅ [NewsWatcher] WhatsApp sent for {ticker}")
                     else:
                         print(f"   💤 {ticker} → {signal} {conf}/100 — below threshold ({CONFIDENCE_THRESHOLD})")
 

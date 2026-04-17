@@ -24,14 +24,12 @@ from zoneinfo import ZoneInfo
 
 import yfinance as yf
 
-from alerts import send_whatsapp
-
 EST              = ZoneInfo("America/New_York")
 SPIKE_INTERVAL   = 60       # seconds between cycles
 PRICE_SPIKE_PCT  = 0.02     # 2% move in last 1-min bar
 VOL_SPIKE_RATIO  = 2.5      # volume ≥ 2.5× bar average
 SPIKE_COOLDOWN_S = 30 * 60  # 30-min cooldown per ticker
-CHUNK_SIZE       = 200      # tickers per cycle from the universe
+CHUNK_SIZE       = 50       # tickers per cycle — keeps FD usage manageable
 
 _spike_alerted:  dict = {}  # {ticker: time.time()} of last spike trigger
 _universe_cache: list = []  # loaded once at startup
@@ -105,7 +103,7 @@ def _fetch_spikes(tickers: list) -> list:
             group_by="ticker",
             auto_adjust=True,
             progress=False,
-            threads=True,
+            threads=False,
         )
         if df is None or df.empty:
             return []
@@ -155,17 +153,15 @@ def _fetch_spikes(tickers: list) -> list:
 
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
-async def spike_watcher_loop(run_once_fn, paper: bool, get_tickers_fn):
+async def spike_watcher_loop(run_once_fn, get_tickers_fn):
     """
     Async loop started in main.py lifespan.
 
     Args:
         run_once_fn:    main.run_once coroutine — called with (ticker, news_triggered=True)
-        paper:          paper trading flag
         get_tickers_fn: callable returning current watchlist (e.g. wl.load)
     """
-    mode = "PAPER" if paper else "LIVE"
-    print(f"⚡ [SpikeWatcher] Started — checking every {SPIKE_INTERVAL}s | {mode}")
+    print(f"⚡ [SpikeWatcher] Started — checking every {SPIKE_INTERVAL}s")
 
     loop = asyncio.get_running_loop()
 
@@ -205,21 +201,7 @@ async def spike_watcher_loop(run_once_fn, paper: bool, get_tickers_fn):
 
                 arrow = "📈" if direction == "UP" else "📉"
                 sign  = "+" if chg_pct >= 0 else ""
-                msg   = (
-                    f"⚡ SPIKE DETECTED [{datetime.now(tz=EST).strftime('%H:%M')}]\n"
-                    f"{arrow} {ticker}  {sign}{chg_pct:.1f}%  ${price:.2f}\n"
-                    f"Volume: {vol_ratio:.1f}× average\n"
-                    f"Analyzing now..."
-                )
-                print(f"\n⚡ [SpikeWatcher] {ticker} spike: {sign}{chg_pct:.1f}%  vol={vol_ratio:.1f}×")
-
-                if not paper:
-                    try:
-                        send_whatsapp(msg)
-                    except Exception as e:
-                        print(f"⚠️  [SpikeWatcher] WhatsApp failed: {e}")
-                else:
-                    print(f"   📋 [PAPER] Would send:\n{msg}")
+                print(f"\n⚡ [SpikeWatcher] {ticker} spike: {sign}{chg_pct:.1f}%  vol={vol_ratio:.1f}×  — running pipeline...")
 
                 # Trigger full pipeline immediately with news_triggered=True
                 try:

@@ -161,7 +161,7 @@ class TestPerformanceTracker:
         monkeypatch.setattr(pt, "DB_PATH", tmp_path / "test_perf.db")
         pt.init_db()
 
-    def _fake_state(self, ticker="AAPL", signal="BUY", price=170.0, paper=False):
+    def _fake_state(self, ticker="AAPL", signal="BUY", price=170.0):
         import world_context as wctx
         # Ensure macro/geo/breadth have some data
         wctx.update_macro({"regime": "BULL", "bias": "BULLISH"})
@@ -174,7 +174,6 @@ class TestPerformanceTracker:
             "trade_horizon": "swing", "news_triggered": False,
             "rsi": 52.0, "volume_spike": True,
             "news_sentiment": "BULLISH", "reasoning": "Unit test signal",
-            "paper_trading": paper,
         }
 
     def test_init_creates_tables(self, tmp_path):
@@ -214,7 +213,7 @@ class TestPerformanceTracker:
         import performance_tracker as pt
         pt.record_signal(self._fake_state(ticker="AAPL"))
         pt.record_signal(self._fake_state(ticker="MSFT"))
-        open_sigs = pt.get_open_signals(paper=False)
+        open_sigs = pt.get_open_signals()
         tickers = {s["ticker"] for s in open_sigs}
         assert "AAPL" in tickers
         assert "MSFT" in tickers
@@ -224,50 +223,56 @@ class TestPerformanceTracker:
         stats = pt.get_stats(lookback_days=30)
         assert stats["total"] == 0
 
-    def test_paper_signals_excluded_from_live_stats(self):
-        import performance_tracker as pt
-        pt.record_signal(self._fake_state(paper=True))
-        open_live = pt.get_open_signals(paper=False)
-        assert len(open_live) == 0   # paper signal not in live query
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # alert idempotency
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestAlertIdempotency:
+    """
+    Idempotency is now backed by SQLite via performance_tracker.
+    Tests use a temporary in-memory DB to avoid touching real data.
+    """
     def setup_method(self):
-        """Reset idempotency store before each test."""
-        from agents import alert_agent
-        alert_agent._fired_today.clear()
-        alert_agent._fired_date = None
+        """Patch performance_tracker to use a shared in-memory DB for each test."""
+        import performance_tracker as pt
+        import sqlite3
+        self._real_get_conn = pt._get_conn
+        # One shared connection so mark/check see the same data
+        shared = sqlite3.connect(":memory:")
+        shared.row_factory = sqlite3.Row
+        shared.executescript("""
+            CREATE TABLE IF NOT EXISTS fired_alerts (
+                ticker TEXT NOT NULL, signal TEXT NOT NULL,
+                paper INTEGER NOT NULL DEFAULT 0, fired_date TEXT NOT NULL,
+                PRIMARY KEY (ticker, signal, paper, fired_date)
+            );
+        """)
+        pt._get_conn = lambda: shared
+
+    def teardown_method(self):
+        import performance_tracker as pt
+        pt._get_conn = self._real_get_conn
 
     def test_first_alert_not_duplicate(self):
-        from agents.alert_agent import _is_duplicate
-        assert _is_duplicate("AAPL", "BUY") is False
+        import performance_tracker as pt
+        assert pt.is_alert_fired("AAPL", "BUY") is False
 
     def test_second_alert_is_duplicate(self):
-        from agents.alert_agent import _is_duplicate, _mark_fired
-        _mark_fired("AAPL", "BUY")
-        assert _is_duplicate("AAPL", "BUY") is True
+        import performance_tracker as pt
+        pt.mark_alert_fired("AAPL", "BUY")
+        assert pt.is_alert_fired("AAPL", "BUY") is True
 
     def test_different_signal_not_duplicate(self):
-        from agents.alert_agent import _is_duplicate, _mark_fired
-        _mark_fired("AAPL", "BUY")
-        assert _is_duplicate("AAPL", "SELL") is False
+        import performance_tracker as pt
+        pt.mark_alert_fired("AAPL", "BUY")
+        assert pt.is_alert_fired("AAPL", "SELL") is False
 
     def test_different_ticker_not_duplicate(self):
-        from agents.alert_agent import _is_duplicate, _mark_fired
-        _mark_fired("AAPL", "BUY")
-        assert _is_duplicate("MSFT", "BUY") is False
+        import performance_tracker as pt
+        pt.mark_alert_fired("AAPL", "BUY")
+        assert pt.is_alert_fired("MSFT", "BUY") is False
 
-    def test_resets_on_new_day(self):
-        from agents import alert_agent
-        from agents.alert_agent import _mark_fired, _is_duplicate
-        _mark_fired("AAPL", "BUY")
-        # Simulate day rollover by setting _fired_date to yesterday
-        alert_agent._fired_date = date(2000, 1, 1)
-        assert _is_duplicate("AAPL", "BUY") is False  # new day → store cleared
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

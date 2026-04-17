@@ -35,7 +35,8 @@ _NEWS_KEYS = frozenset({
     "news_sentiment", "sentiment_score", "news_summary", "social_velocity",
 })
 _TECH_KEYS = frozenset({
-    "rsi", "intraday_rsi", "macd", "bollinger", "atr", "support", "resistance",
+    "rsi", "intraday_rsi", "stoch_rsi", "stoch_rsi_k", "stoch_rsi_d",
+    "stoch_rsi_signal", "macd", "bollinger", "atr", "support", "resistance",
     "sr_levels", "volume_spike", "volume_spike_ratio", "vwap", "obv", "smart_money",
     "ema_stack", "float_rotation", "sector_momentum", "timing", "gap_info",
     "market_regime", "relative_strength", "score_breakdown", "patterns",
@@ -62,7 +63,7 @@ class AgentState(TypedDict):
     # Config / input
     ticker:        str
     timestamp:     str
-    paper_trading: bool
+    pass  # paper_trading removed
 
     # Data node
     current_price:    float
@@ -90,6 +91,10 @@ class AgentState(TypedDict):
     # Tech node
     rsi:               float
     intraday_rsi:      float
+    stoch_rsi:         float
+    stoch_rsi_k:       float
+    stoch_rsi_d:       float
+    stoch_rsi_signal:  str
     macd:              dict
     bollinger:         dict
     atr:               float
@@ -333,11 +338,10 @@ def build_graph():
 GRAPH = build_graph()
 
 
-def make_initial_state(ticker: str, paper_trading: bool = False) -> AgentState:
+def make_initial_state(ticker: str) -> AgentState:
     return AgentState(
         ticker=ticker,
         timestamp=datetime.now(timezone.utc).isoformat(),
-        paper_trading=paper_trading,
         current_price=0.0,
         price_fetched_at="",
         prev_close=0.0,
@@ -352,6 +356,10 @@ def make_initial_state(ticker: str, paper_trading: bool = False) -> AgentState:
         sentiment_score=50.0,
         news_summary="",
         rsi=50.0,
+        stoch_rsi=0.5,
+        stoch_rsi_k=0.5,
+        stoch_rsi_d=0.5,
+        stoch_rsi_signal="NEUTRAL",
         macd={"macd": 0.0, "signal": 0.0, "histogram": 0.0},
         bollinger={"upper": 0.0, "middle": 0.0, "lower": 0.0, "bandwidth": 0.0},
         atr=0.0,

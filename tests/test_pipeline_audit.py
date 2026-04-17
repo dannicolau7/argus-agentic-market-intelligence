@@ -10,7 +10,6 @@ def test_pipeline_audit_real():
     from graph import make_initial_state, GRAPH
 
     state = make_initial_state("AAPL")
-    state["paper_trading"] = True
 
     result = GRAPH.invoke(state)
 

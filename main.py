@@ -4,7 +4,6 @@ main.py — entry point for the Argus.
 Usage:
   python main.py                         # monitor TICKER from .env
   python main.py --ticker AAPL           # override ticker
-  python main.py --ticker BZAI --paper   # paper trading (no real alerts)
   python main.py --interval 120          # check every 2 minutes
   python main.py --port 8080             # dashboard on custom port
 
@@ -12,7 +11,6 @@ Features:
   - Market hours awareness (9:30 AM - 4:00 PM EST)
   - Signal memory + stop loss / target monitoring
   - Daily summary report at 4:30 PM EST
-  - Paper trading mode (logs only, no SMS/push)
   - FastAPI dashboard at http://localhost:{port}
 """
 
@@ -41,7 +39,6 @@ def _parse_args():
     p = argparse.ArgumentParser(description="Argus")
     p.add_argument("--ticker",   nargs="+", default=None,  help="One or more ticker symbols (e.g. --ticker BZAI AWRE)")
     p.add_argument("--interval", type=int, default=300, help="Scan interval seconds (default 300 = 5 min)")
-    p.add_argument("--paper",    action="store_true",   help="Paper trading — no real SMS/push alerts")
     p.add_argument("--port",     type=int, default=8000, help="Dashboard port (default 8000)")
     # Watchlist management (these exit immediately without starting the server)
     p.add_argument("--add",    metavar="TICKER", default=None, help="Add ticker to watchlist and exit")
@@ -54,14 +51,13 @@ def _parse_args():
 TICKERS  = ["BZAI"]
 TICKER   = "BZAI"
 INTERVAL = 300
-PAPER    = False
 PORT     = 8000
 EST      = ZoneInfo("America/New_York")
 
 
 def _setup_from_args() -> None:
     """Parse CLI args and populate module-level config. Called only from __main__."""
-    global TICKERS, TICKER, INTERVAL, PAPER, PORT
+    global TICKERS, TICKER, INTERVAL, PORT
 
     args = _parse_args()
 
@@ -90,7 +86,6 @@ def _setup_from_args() -> None:
 
     TICKER   = TICKERS[0]
     INTERVAL = args.interval
-    PAPER    = args.paper
     PORT     = args.port
 
 
@@ -195,12 +190,12 @@ def _build_trace(ticker: str, state: dict, elapsed_ms: float) -> dict:
 
 # ── Graph execution ────────────────────────────────────────────────────────────
 
-def _run_sync(ticker: str, paper: bool,
+def _run_sync(ticker: str,
               already_alerted: bool = False,
               news_triggered: bool = False) -> dict:
     global _last_trace
     import time as _time
-    state = make_initial_state(ticker, paper_trading=paper)
+    state = make_initial_state(ticker)
     state["already_alerted"] = already_alerted
     state["news_triggered"]  = news_triggered
     t0 = _time.monotonic()
@@ -279,7 +274,7 @@ async def run_once(ticker: str = None, news_triggered: bool = False):
     # Suppress re-alerting if this ticker already has an active BUY position
     already_alerted = ticker in _app_state.signal_memory
     result = await loop.run_in_executor(
-        _executor, _run_sync, ticker, PAPER, already_alerted, news_triggered
+        _executor, _run_sync, ticker, already_alerted, news_triggered
     )
 
     _store_result(result)
@@ -291,15 +286,14 @@ async def run_once(ticker: str = None, news_triggered: bool = False):
     if exit_reason:
         icon = "🛑" if exit_reason == "STOP_LOSS" else "🎯"
         print(f"{icon} [Monitor] {exit_reason} triggered for {ticker} @ ${price:.4f}")
-        if not PAPER:
-            try:
-                from alerts import send_push, send_whatsapp
-                label = "🛑 STOP LOSS HIT" if exit_reason == "STOP_LOSS" else "🎯 TARGET HIT"
-                msg   = f"{label}\n{ticker} @ ${price:.4f}"
-                send_push(f"{exit_reason} — {ticker}", msg)
-                send_whatsapp(msg)
-            except Exception as e:
-                print(f"❌ [Monitor] Exit alert failed: {e}")
+        try:
+            from alerts import send_push, send_whatsapp
+            label = "🛑 STOP LOSS HIT" if exit_reason == "STOP_LOSS" else "🎯 TARGET HIT"
+            msg   = f"{label}\n{ticker} @ ${price:.4f}"
+            send_push(f"{exit_reason} — {ticker}", msg)
+            send_whatsapp(msg)
+        except Exception as e:
+            print(f"❌ [Monitor] Exit alert failed: {e}")
         _app_state.signal_memory.pop(ticker, None)
 
     sig  = result.get("signal", "HOLD")
@@ -308,7 +302,6 @@ async def run_once(ticker: str = None, news_triggered: bool = False):
     print(
         f"{icon} [Monitor] {sig}  conf={conf}/100  "
         f"${price:.4f}  RSI={result.get('rsi', 0):.1f}"
-        + ("  📋 PAPER" if PAPER else "")
     )
 
 
@@ -326,28 +319,23 @@ async def _send_daily_report():
         for s in today_signals:
             icon = "🟢" if s["signal"] == "BUY" else "🔴"
             lines.append(f"  {icon} {s['signal']} @ ${s['price']:.4f}  conf={s['confidence']}")
-    if PAPER:
-        lines.append("\n📋 PAPER TRADING MODE")
-
     report = "\n".join(lines)
     print("\n" + "─" * 50)
     print(report)
     print("─" * 50 + "\n")
 
-    if not PAPER:
-        try:
-            from alerts import send_push, send_whatsapp
-            send_push(f"Daily Report — {TICKER}", report)
-            send_whatsapp(report)
-        except Exception as e:
-            print(f"❌ [Monitor] Daily report delivery failed: {e}")
+    try:
+        from alerts import send_push, send_whatsapp
+        send_push(f"Daily Report — {TICKER}", report)
+        send_whatsapp(report)
+    except Exception as e:
+        print(f"❌ [Monitor] Daily report delivery failed: {e}")
 
 
 # ── Monitoring loop ────────────────────────────────────────────────────────────
 
 async def monitoring_loop():
-    mode = "📋 PAPER" if PAPER else "🔴 LIVE"
-    print(f"🚀 Argus — Agentic Market Intelligence  [{mode}]  tickers={', '.join(TICKERS)}  interval={INTERVAL}s")
+    print(f"🚀 Argus — Agentic Market Intelligence  [🔴 LIVE]  tickers={', '.join(TICKERS)}  interval={INTERVAL}s")
     print(f"📊 Dashboard → http://localhost:{PORT}")
 
     # Print watchlist on startup
@@ -495,22 +483,22 @@ async def lifespan(app: FastAPI):
 
     sup.start("monitor",    monitoring_loop)
     sup.start("scheduler",  lambda: scheduler_loop(
-        paper=PAPER, daily_log=_app_state.daily_log,
+        daily_log=_app_state.daily_log,
         signal_memory=_app_state.signal_memory))
-    sup.start("news",       lambda: news_watcher_loop(paper=PAPER))
-    sup.start("yf_news",    lambda: yf_news_watcher_loop(paper=PAPER))
-    sup.start("spike",      lambda: spike_watcher_loop(run_once, PAPER, wl.load))
-    sup.start("edgar",      lambda: edgar_watcher_loop(paper=PAPER))
+    sup.start("news",       news_watcher_loop)
+    sup.start("yf_news",    yf_news_watcher_loop)
+    sup.start("spike",      lambda: spike_watcher_loop(run_once, wl.load))
+    sup.start("edgar",      edgar_watcher_loop)
     sup.start("geo",        geo_watcher_loop)
     sup.start("macro",      macro_watcher_loop)
     sup.start("earnings",   lambda: earnings_watcher_loop(extra_tickers=TICKERS))
     sup.start("breadth",    breadth_watcher_loop)
     sup.start("social",     lambda: social_watcher_loop(extra_tickers=TICKERS))
     sup.start("discovery",  lambda: discovery_agent_loop(static_watchlist_fn=wl.load))
-    sup.start("portfolio",  lambda: portfolio_agent_loop(paper=PAPER))
+    sup.start("portfolio",  portfolio_agent_loop)
     sup.start("tracker",    performance_tracker_loop)
-    sup.start("reflection", lambda: reflection_agent_loop(paper=PAPER))
-    sup.start("momentum",   lambda: momentum_screener_loop(paper=PAPER, watchlist_fn=wl.load))
+    sup.start("reflection", reflection_agent_loop)
+    sup.start("momentum",   lambda: momentum_screener_loop(watchlist_fn=wl.load))
 
     yield
     await sup.cancel_all()
@@ -581,7 +569,6 @@ async def api_state(ticker: str = None):
     return JSONResponse(_json_safe({
         "state":         state,
         "history":       history,
-        "paper_trading": PAPER,
         "ticker":        t,
         "tickers":       TICKERS,
         "market_open":   is_market_open(),
@@ -770,7 +757,7 @@ async def api_portfolio():
     from portfolio_agent  import get_portfolio_summary, get_cached_portfolio
     from discovery_agent  import get_discovery_tickers
     from reflection_agent import load_learnings
-    summary    = get_portfolio_summary(paper=PAPER)
+    summary    = get_portfolio_summary()
     learnings  = load_learnings()
     return JSONResponse(_json_safe({
         **summary,
@@ -998,14 +985,14 @@ async def api_agent_flow():
 
 @app.get("/api/pipeline-run")
 async def api_pipeline_run(ticker: str = None):
-    """Run a paper-mode pipeline audit and return a detailed per-node trace."""
+    """Run a pipeline audit and return a detailed per-node trace."""
     global _last_trace
     t = (ticker or TICKER).upper()
     try:
         from graph import run_pipeline_audit, make_initial_state as _mis
         import time as _time
         loop = asyncio.get_running_loop()
-        initial_state = _mis(t, paper_trading=True)
+        initial_state = _mis(t)
         t0 = _time.monotonic()
         audit = await loop.run_in_executor(_executor, run_pipeline_audit, initial_state)
         elapsed_ms = (_time.monotonic() - t0) * 1000

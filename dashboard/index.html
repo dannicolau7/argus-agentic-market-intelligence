@@ -34,7 +34,6 @@
     #market-pill { font-size: 11px; }
     .market-open   { background: #1a4731; color: var(--green); border: 1px solid var(--green); }
     .market-closed { background: #21262d; color: var(--muted); border: 1px solid var(--border); }
-    .paper-pill { background: #1a1a4d; color: #8888ff; border: 1px solid #4444aa; }
     #price-display { font-size: 16px; font-weight: 700; margin-left: 4px; }
     #conf-header { font-size: 11px; color: var(--muted); margin-left: auto; }
     #last-update { font-size: 11px; color: var(--muted); }
@@ -210,7 +209,6 @@
   <span class="pill sig-hold" id="signal-pill">HOLD</span>
   <span id="price-display">—</span>
   <span class="pill market-closed" id="market-pill">CLOSED</span>
-  <span class="pill paper-pill" id="paper-pill" style="display:none">PAPER</span>
   <span id="conf-header">conf —/100</span>
   <span id="last-update">—</span>
   <button id="run-btn" onclick="triggerRun()">▶ Run Now</button>
@@ -578,7 +576,7 @@ async function fetchState() {
     const res  = await fetch(url);
     const data = await res.json();
     updateSignalUI(data.state || {}, data.history || []);
-    updateMarketStatus(data.market_open, data.paper_trading);
+    updateMarketStatus(data.market_open);
     document.getElementById('ticker-pill').textContent = data.ticker || '—';
   } catch(e) { console.error('fetchState:', e); }
 }
@@ -1125,11 +1123,10 @@ function updateSignalUI(state, history) {
   }
 }
 
-function updateMarketStatus(open, paper) {
+function updateMarketStatus(open) {
   const pill = document.getElementById('market-pill');
   pill.textContent = open ? '● OPEN' : '○ CLOSED';
   pill.className = 'pill ' + (open ? 'market-open' : 'market-closed');
-  document.getElementById('paper-pill').style.display = paper ? '' : 'none';
 }
 
 // ── Confidence gauge ───────────────────────────────────────────────────────────

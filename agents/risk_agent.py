@@ -85,14 +85,13 @@ def risk_node(state: dict) -> dict:
     avg_volume   = state.get("avg_volume", 0.0)
     news_trig    = state.get("news_triggered", False)
     stop_loss    = state.get("stop_loss", 0.0)
-    paper        = state.get("paper_trading", False)
 
     vetoes:   list[str] = []
     warnings: list[str] = []
     risk_multiplier     = 1.0   # 1.0 = full size, 0.5 = half size, 0.0 = veto
 
     # ── 1. Daily loss limit ────────────────────────────────────────────────────
-    daily_loss_pct = _get_daily_loss_pct(paper)
+    daily_loss_pct = _get_daily_loss_pct()
     if daily_loss_pct <= -MAX_DAILY_LOSS:
         vetoes.append(
             f"Daily loss limit hit ({daily_loss_pct*100:.1f}% vs -{MAX_DAILY_LOSS*100:.0f}% limit) "
@@ -100,7 +99,7 @@ def risk_node(state: dict) -> dict:
         )
 
     # ── 2. Open position count ─────────────────────────────────────────────────
-    open_count = _count_open_positions(paper)
+    open_count = _count_open_positions()
     if open_count >= MAX_OPEN_POSITIONS:
         vetoes.append(
             f"Max open positions reached ({open_count}/{MAX_OPEN_POSITIONS}) "
@@ -108,7 +107,7 @@ def risk_node(state: dict) -> dict:
         )
 
     # ── 3. Sector concentration ────────────────────────────────────────────────
-    sector_pct = _sector_exposure_pct(sector, paper)
+    sector_pct = _sector_exposure_pct(sector)
     if sector_pct >= MAX_SECTOR_PCT:
         vetoes.append(
             f"Sector concentration too high: {sector} already at {sector_pct*100:.0f}% "
@@ -121,7 +120,7 @@ def risk_node(state: dict) -> dict:
     # ── 4. Small-cap / low-float exposure ──────────────────────────────────────
     is_small_cap = avg_volume > 0 and avg_volume < 500_000
     if is_small_cap:
-        smallcap_pct = _smallcap_exposure_pct(paper)
+        smallcap_pct = _smallcap_exposure_pct()
         if smallcap_pct >= MAX_SMALLCAP_PCT:
             vetoes.append(
                 f"Small-cap exposure limit: {smallcap_pct*100:.0f}% of portfolio already in "
@@ -200,7 +199,7 @@ def risk_node(state: dict) -> dict:
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def _get_daily_loss_pct(paper: bool = False) -> float:
+def _get_daily_loss_pct() -> float:
     """Compute today's realized P&L as % of portfolio from performance_tracker."""
     try:
         import performance_tracker as pt
@@ -210,10 +209,10 @@ def _get_daily_loss_pct(paper: bool = False) -> float:
                 FROM outcomes o
                 JOIN signals s ON s.id = o.signal_id
                 WHERE s.fired_at >= date('now', 'start of day')
-                  AND s.paper = ?
+                  AND s.paper = 0
                   AND o.win IS NOT NULL
                   AND o.checkpoint = '1d'
-            """, (int(paper),)).fetchall()
+            """).fetchall()
         if not rows:
             return 0.0
         return sum(r[0] for r in rows) / 100 / len(rows)
@@ -221,36 +220,35 @@ def _get_daily_loss_pct(paper: bool = False) -> float:
         return 0.0    # fail open — don't block if tracker unavailable
 
 
-def _count_open_positions(paper: bool = False) -> int:
-    """Count open BUY positions from performance_tracker, scoped to paper/live."""
+def _count_open_positions() -> int:
+    """Count open BUY positions from performance_tracker."""
     try:
         import performance_tracker as pt
-        return len(pt.get_open_signals(paper=paper))
+        return len(pt.get_open_signals())
     except Exception:
         return 0
 
 
-def _sector_exposure_pct(sector: str, paper: bool = False) -> float:
-    """Fraction of open BUY positions already in `sector`, scoped to paper/live."""
+def _sector_exposure_pct(sector: str) -> float:
+    """Fraction of open BUY positions already in `sector`."""
     try:
         import performance_tracker as pt
-        p = int(paper)
         with pt._get_conn() as conn:
             total = conn.execute("""
                 SELECT COUNT(*) FROM signals s
-                WHERE s.signal = 'BUY' AND s.paper = ?
+                WHERE s.signal = 'BUY' AND s.paper = 0
                   AND NOT EXISTS (
                       SELECT 1 FROM outcomes o
                       WHERE o.signal_id = s.id
                         AND o.checkpoint = '7d'
                         AND o.win IS NOT NULL
                   )
-            """, (p,)).fetchone()[0]
+            """).fetchone()[0]
             if total == 0:
                 return 0.0
             in_sector = conn.execute("""
                 SELECT COUNT(*) FROM signals s
-                WHERE s.signal = 'BUY' AND s.paper = ?
+                WHERE s.signal = 'BUY' AND s.paper = 0
                   AND s.sector = ?
                   AND NOT EXISTS (
                       SELECT 1 FROM outcomes o
@@ -258,33 +256,32 @@ def _sector_exposure_pct(sector: str, paper: bool = False) -> float:
                         AND o.checkpoint = '7d'
                         AND o.win IS NOT NULL
                   )
-            """, (p, sector)).fetchone()[0]
+            """, (sector,)).fetchone()[0]
             return in_sector / total
     except Exception:
         return 0.0   # fail open
 
 
-def _smallcap_exposure_pct(paper: bool = False) -> float:
-    """Fraction of open BUY positions in low-liquidity names, scoped to paper/live."""
+def _smallcap_exposure_pct() -> float:
+    """Fraction of open BUY positions in low-liquidity names."""
     try:
         import performance_tracker as pt
-        p = int(paper)
         with pt._get_conn() as conn:
             total = conn.execute("""
                 SELECT COUNT(*) FROM signals s
-                WHERE s.signal = 'BUY' AND s.paper = ?
+                WHERE s.signal = 'BUY' AND s.paper = 0
                   AND NOT EXISTS (
                       SELECT 1 FROM outcomes o
                       WHERE o.signal_id = s.id
                         AND o.checkpoint = '7d'
                         AND o.win IS NOT NULL
                   )
-            """, (p,)).fetchone()[0]
+            """).fetchone()[0]
             if total == 0:
                 return 0.0
             small_cap = conn.execute("""
                 SELECT COUNT(*) FROM signals s
-                WHERE s.signal = 'BUY' AND s.paper = ?
+                WHERE s.signal = 'BUY' AND s.paper = 0
                   AND s.avg_volume > 0 AND s.avg_volume < 500000
                   AND NOT EXISTS (
                       SELECT 1 FROM outcomes o
@@ -292,7 +289,7 @@ def _smallcap_exposure_pct(paper: bool = False) -> float:
                         AND o.checkpoint = '7d'
                         AND o.win IS NOT NULL
                   )
-            """, (p,)).fetchone()[0]
+            """).fetchone()[0]
             return small_cap / total
     except Exception:
         return 0.0   # fail open

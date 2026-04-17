@@ -121,14 +121,17 @@ def run_checks(fail_fast: bool = False) -> int:
     if not _check("hub imported + reflection weights + agreement_min used", _check_aggregator_hub):
         failures += 1
 
-    # ── 7. DecisionAgent dedup check ────────────────────────────────────────
+    # ── 7. DecisionAgent dedup + AlertAgent mark_alerted ────────────────────
     print("\n7. DecisionAgent — dedup + confidence cap")
     def _check_decision_hub():
-        src = open(os.path.join(os.path.dirname(__file__),
-                                "agents", "decision_agent.py")).read()
-        assert "hub.was_alerted_today" in src, "dedup check missing"
-        assert "hub.mark_alerted" in src, "mark_alerted missing"
-        assert "confidence_cap" in src, "confidence_cap not applied"
+        decision_src = open(os.path.join(os.path.dirname(__file__),
+                                         "agents", "decision_agent.py")).read()
+        alert_src    = open(os.path.join(os.path.dirname(__file__),
+                                         "agents", "alert_agent.py")).read()
+        assert "hub.was_alerted_today" in decision_src, "dedup check missing"
+        # mark_alerted fires in alert_agent (after successful delivery), not decision_agent
+        assert "hub.mark_alerted" in alert_src, "mark_alerted missing from alert_agent"
+        assert "confidence_cap" in decision_src, "confidence_cap not applied"
     if not _check("was_alerted_today + mark_alerted + confidence_cap", _check_decision_hub):
         failures += 1
 

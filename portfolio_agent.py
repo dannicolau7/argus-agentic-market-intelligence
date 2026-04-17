@@ -67,7 +67,7 @@ def init_positions_table():
         """)
 
 
-def _load_open_positions(paper: bool = False) -> list[dict]:
+def _load_open_positions() -> list[dict]:
     """Load open (non-exited) positions from DB."""
     with _get_conn() as conn:
         rows = conn.execute("""
@@ -75,9 +75,9 @@ def _load_open_positions(paper: bool = False) -> list[dict]:
             FROM positions p
             JOIN signals s ON s.id = p.signal_id
             WHERE p.exit_price IS NULL
-              AND s.paper = ?
+              AND s.paper = 0
             ORDER BY p.fired_at
-        """, (int(paper),)).fetchall()
+        """).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -125,9 +125,9 @@ def _mark_exited(signal_id: int, exit_price: float, reason: str):
 
 # ── Sync open positions from performance_tracker ──────────────────────────────
 
-def _sync_open_signals(paper: bool = False):
+def _sync_open_signals():
     """Pull fresh BUY signals from signals table into positions table."""
-    open_sigs = pt.get_open_signals(paper=paper)
+    open_sigs = pt.get_open_signals()
     for s in open_sigs:
         _upsert_position(
             signal_id=s["id"],
@@ -142,13 +142,13 @@ def _sync_open_signals(paper: bool = False):
 
 # ── Price check and exit logic ────────────────────────────────────────────────
 
-def _check_positions(paper: bool = False) -> list[dict]:
+def _check_positions() -> list[dict]:
     """
     Check all open positions. Fire EXIT alerts when triggered.
     Returns list of current position summaries.
     """
-    _sync_open_signals(paper=paper)
-    positions = _load_open_positions(paper=paper)
+    _sync_open_signals()
+    positions = _load_open_positions()
 
     if not positions:
         return []
@@ -200,29 +200,30 @@ def _check_positions(paper: bool = False) -> list[dict]:
             # Target 1 hit — raise stop to breakeven, don't exit yet
             _mark_t1_hit(sig_id)
             print(f"🎯 [Portfolio] {ticker} hit T1 ${t1:.2f} (+{ret_pct:.1f}%) — stop raised to breakeven")
-            if not paper:
-                send_alert(
-                    ticker=ticker, signal="PARTIAL_EXIT",
-                    price=current,
-                    entry_low=entry, entry_high=entry,
-                    targets=[t2] if t2 else [],
-                    stop=entry,
-                    reason=f"Target 1 hit at ${t1:.2f}. Take 50% profits. Stop raised to breakeven ${entry:.2f}.",
-                    confidence=80, horizon=horizon, horizon_reason="",
-                )
+            _atr_est  = current * 0.015   # 1.5% of current price as ATR proxy
+            _ez_low   = round(current - 0.5 * _atr_est, 2)
+            _ez_high  = round(current + 0.5 * _atr_est, 2)
+            send_alert(
+                ticker=ticker, signal="PARTIAL_EXIT",
+                price=current,
+                entry_low=_ez_low, entry_high=_ez_high,
+                targets=[t2] if t2 else [],
+                stop=entry,
+                reason=f"Target 1 hit at ${t1:.2f}. Take 50% profits. Stop raised to breakeven ${entry:.2f}.",
+                confidence=80, horizon=horizon, horizon_reason="",
+            )
 
         if exit_reason:
             _mark_exited(sig_id, exit_price, exit_reason)
             print(f"🚪 [Portfolio] EXIT {ticker} @ ${exit_price:.2f} ({ret_pct:+.1f}%) — {exit_reason}")
-            if not paper:
-                send_alert(
-                    ticker=ticker, signal="SELL",
-                    price=exit_price,
-                    entry_low=entry, entry_high=entry,
-                    targets=[], stop=0,
-                    reason=exit_reason,
-                    confidence=90, horizon=horizon, horizon_reason="",
-                )
+            send_alert(
+                ticker=ticker, signal="SELL",
+                price=exit_price,
+                entry_low=entry, entry_high=entry,
+                targets=[], stop=0,
+                reason=exit_reason,
+                confidence=90, horizon=horizon, horizon_reason="",
+            )
         else:
             summaries.append({
                 "ticker":      ticker,
@@ -250,15 +251,15 @@ def _get_current_price(ticker: str) -> float:
 
 # ── Portfolio summary ──────────────────────────────────────────────────────────
 
-def get_portfolio_summary(paper: bool = False) -> dict:
+def get_portfolio_summary() -> dict:
     """Returns full portfolio state — used by /api/portfolio endpoint."""
-    positions = _check_positions(paper=paper)
+    positions = _check_positions()
 
     total_pnl  = sum(p["return_pct"] for p in positions)
     winners    = [p for p in positions if p["return_pct"] > 0]
     losers     = [p for p in positions if p["return_pct"] <= 0]
 
-    stats      = pt.get_stats(lookback_days=30, paper=paper)
+    stats      = pt.get_stats(lookback_days=30)
     ctx        = wctx.get()
 
     return {
@@ -327,7 +328,7 @@ def _check_concentration(positions: list[dict]) -> list[str]:
 _portfolio_state: list[dict] = []   # in-memory cache for dashboard
 
 
-async def portfolio_agent_loop(paper: bool = False):
+async def portfolio_agent_loop():
     """Async loop started in main.py lifespan. Runs every 5 minutes."""
     global _portfolio_state
     print(f"💼 [Portfolio] Started — checking every {PORTFOLIO_INTERVAL//60}min")
@@ -338,7 +339,7 @@ async def portfolio_agent_loop(paper: bool = False):
     while True:
         try:
             positions = await loop.run_in_executor(
-                None, _check_positions, paper
+                None, _check_positions
             )
             _portfolio_state = positions
 
@@ -382,7 +383,7 @@ if __name__ == "__main__":
     init_positions_table()
 
     # The open signals from performance_tracker test run will be checked
-    summary = get_portfolio_summary(paper=False)
+    summary = get_portfolio_summary()
     print(f"Open positions: {summary['count']}")
     for p in summary["open_positions"]:
         icon = "🟢" if p["return_pct"] > 0 else "🔴"

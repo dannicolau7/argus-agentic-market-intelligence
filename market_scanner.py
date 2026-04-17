@@ -1006,7 +1006,7 @@ def update_pick_accuracy():
 
 # ── Main Best-of-Day pipeline ──────────────────────────────────────────────────
 
-def scan_best_of_day(paper: bool = False, verbose: bool = False,
+def scan_best_of_day(verbose: bool = False,
                       max_universe: int = 6000,
                       extra_tickers: list = None,
                       min_score: int = None,
@@ -1194,13 +1194,12 @@ def scan_best_of_day(paper: bool = False, verbose: bool = False,
 
     if not qualifiers:
         print(f"\n⚠️  [Best-of-Day] No stocks scored ≥{score_threshold} — no pick today.")
-        if not paper:
-            from alerts import send_whatsapp as _sw
-            _sw(
-                f"📊 Best-of-Day scan complete (7:45 AM)\n"
-                f"No qualifying stock today — nothing scored ≥{score_threshold} pts.\n"
-                f"Scanned {n_universe} tickers. Stay patient. 💤"
-            )
+        from alerts import send_whatsapp as _sw
+        _sw(
+            f"📊 Best-of-Day scan complete (7:45 AM)\n"
+            f"No qualifying stock today — nothing scored ≥{score_threshold} pts.\n"
+            f"Scanned {n_universe} tickers. Stay patient. 💤"
+        )
         return {}
 
     top3 = qualifiers[:3]
@@ -1220,7 +1219,7 @@ def scan_best_of_day(paper: bool = False, verbose: bool = False,
 
     def _pipe(candidate: dict) -> dict:
         ticker = candidate["ticker"]
-        state  = make_initial_state(ticker, paper_trading=paper)
+        state  = make_initial_state(ticker)
         state["news_triggered"] = True   # morning picks qualify for lower threshold
         try:
             result = GRAPH.invoke(state)
@@ -1291,10 +1290,7 @@ def scan_best_of_day(paper: bool = False, verbose: bool = False,
             f"entry ${winner['entry_low']:.2f}–${winner['entry_high']:.2f}"
         )
 
-        if paper:
-            print("\n📋 [PAPER MODE] Alert NOT sent.")
-        else:
-            _send_alert(
+        _send_alert(
                 ticker=ticker,
                 signal="BUY",
                 price=price,
@@ -1348,12 +1344,9 @@ def scan_best_of_day(paper: bool = False, verbose: bool = False,
         print(msg)
         print("─" * 55)
 
-        if paper:
-            print("\n📋 [PAPER MODE] WhatsApp NOT sent.")
-        else:
-            from alerts import send_whatsapp
-            send_whatsapp(msg)
-            print("✅ [Best-of-Day] WhatsApp sent (fallback format).")
+        from alerts import send_whatsapp
+        send_whatsapp(msg)
+        print("✅ [Best-of-Day] WhatsApp sent (fallback format).")
 
     # ── Log to best_picks_log.csv ──────────────────────────────────────────────
     log_best_pick(winner)
@@ -1467,7 +1460,6 @@ if __name__ == "__main__":
 
     if args.best_of_day:
         result = scan_best_of_day(
-            paper        = args.test,
             verbose      = args.verbose,
             max_universe = args.universe,
             extra_tickers = watchlist,

@@ -100,8 +100,7 @@ def decision_node(state: dict) -> dict:
         }
 
     # ── Portfolio context ────────────────────────────────────────────────────
-    paper_mode = state.get("paper_trading", False)
-    portfolio  = hub.get_portfolio_context(ticker, paper=paper_mode)
+    portfolio  = hub.get_portfolio_context(ticker)
     if portfolio.get("already_open"):
         print(f"⚠️  [DecisionAgent] {ticker} already in portfolio — will cap confidence")
 
