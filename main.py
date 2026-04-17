@@ -136,15 +136,78 @@ _app_state = AppState()
 _executor  = ThreadPoolExecutor(max_workers=4)   # supports parallel ticker scanning
 
 
+# ── Pipeline trace (updated on every GRAPH.invoke call) ────────────────────────
+
+_last_trace: dict = {
+    "ticker": None, "timestamp": None, "nodes": [],
+    "total_time_ms": 0, "final_signal": None, "confidence": 0, "alert_fired": False,
+}
+
+# Keys each node is primarily responsible for writing (for trace display grouping)
+_NODE_KEY_OUTPUTS = {
+    "fetch_data":          ["current_price", "rsi", "volume_spike_ratio"],
+    "parallel_analyze":    ["news_sentiment", "sentiment_score", "macd_signal", "ema_signal", "volume_spike"],
+    "aggregate_signals":   ["score_breakdown", "signal", "confidence"],
+    "decide":              ["signal", "confidence", "should_alert", "entry_zone", "targets", "stop_loss"],
+    "validate_decision":   ["validator_passed", "validator_overrides", "final_signal"],
+    "assess_risk":         ["risk_approved", "risk_veto_reason", "risk_multiplier", "risk_warnings"],
+    "size_position":       ["position_size_pct", "position_size_usd", "max_shares", "scale_in"],
+    "check_execution":     ["executable", "order_type", "execution_reason"],
+    "alert":               ["alert_sent", "alert_reason_code"],
+}
+
+_NODE_TIME_WEIGHTS = {
+    "fetch_data": 0.38, "parallel_analyze": 0.26, "aggregate_signals": 0.07,
+    "decide": 0.12, "validate_decision": 0.05, "assess_risk": 0.04,
+    "size_position": 0.03, "check_execution": 0.03, "alert": 0.02,
+}
+
+
+def _build_trace(ticker: str, state: dict, elapsed_ms: float) -> dict:
+    """Build a synthetic per-node trace from the final pipeline state."""
+    nodes = []
+    for node_name, keys in _NODE_KEY_OUTPUTS.items():
+        outputs = {k: state.get(k) for k in keys if state.get(k) is not None}
+        if node_name == "assess_risk" and state.get("risk_approved") is False:
+            status = "vetoed"
+        elif node_name == "check_execution" and state.get("executable") is False:
+            status = "blocked"
+        elif node_name == "alert" and not state.get("alert_sent"):
+            status = "skipped"
+        else:
+            status = "completed"
+        nodes.append({
+            "name":    node_name,
+            "status":  status,
+            "time_ms": round(elapsed_ms * _NODE_TIME_WEIGHTS.get(node_name, 0.04)),
+            "outputs": _json_safe(outputs),
+        })
+    return {
+        "ticker":        ticker,
+        "timestamp":     datetime.now().isoformat(),
+        "nodes":         nodes,
+        "total_time_ms": round(elapsed_ms),
+        "final_signal":  state.get("signal", "HOLD"),
+        "confidence":    state.get("confidence", 0),
+        "alert_fired":   bool(state.get("alert_sent")),
+    }
+
+
 # ── Graph execution ────────────────────────────────────────────────────────────
 
 def _run_sync(ticker: str, paper: bool,
               already_alerted: bool = False,
               news_triggered: bool = False) -> dict:
+    global _last_trace
+    import time as _time
     state = make_initial_state(ticker, paper_trading=paper)
     state["already_alerted"] = already_alerted
     state["news_triggered"]  = news_triggered
-    return GRAPH.invoke(state)
+    t0 = _time.monotonic()
+    result = GRAPH.invoke(state)
+    elapsed_ms = (_time.monotonic() - t0) * 1000
+    _last_trace = _build_trace(ticker, result, elapsed_ms)
+    return result
 
 
 def _store_result(result: dict):
@@ -851,6 +914,123 @@ async def api_backtest(body: dict):
         loop   = asyncio.get_event_loop()
         result = await loop.run_in_executor(_executor, lambda: _backtest(tickers, period))
         return JSONResponse(_json_safe(result))
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ── Agent monitor endpoints ────────────────────────────────────────────────────
+
+@app.get("/api/agent-trace")
+async def api_agent_trace():
+    """Last pipeline execution trace — per-node status, timing, and key outputs."""
+    return JSONResponse(_json_safe(_last_trace))
+
+
+@app.get("/api/agent-status")
+async def api_agent_status():
+    """Status of all background agents + world_context freshness."""
+    import task_supervisor as sup
+    import world_context as wctx
+    ctx = wctx.get()
+    health = sup.get_health()
+    task_labels = {
+        "monitor":    "Pipeline Monitor",   "scheduler":  "Scheduler",
+        "news":       "News Watcher",       "yf_news":    "YF News",
+        "spike":      "Spike Watcher",      "edgar":      "EDGAR Watcher",
+        "geo":        "Geo Watcher",        "macro":      "Macro Watcher",
+        "earnings":   "Earnings Watcher",   "breadth":    "Breadth Watcher",
+        "social":     "Social Watcher",     "discovery":  "Discovery Agent",
+        "portfolio":  "Portfolio Agent",    "tracker":    "Perf Tracker",
+        "reflection": "Reflection Agent",   "momentum":   "Momentum Screener",
+    }
+    agents = [
+        {
+            "id":         tid,
+            "label":      label,
+            "status":     health.get(tid, {}).get("status", "unknown"),
+            "alive":      health.get(tid, {}).get("alive", False),
+            "restarts":   health.get(tid, {}).get("restarts", 0),
+            "last_error": health.get(tid, {}).get("last_error"),
+            "started_at": health.get(tid, {}).get("started_at"),
+        }
+        for tid, label in task_labels.items()
+    ]
+    return JSONResponse(_json_safe({
+        "agents": agents,
+        "context": {
+            "macro_regime":     ctx["macro"].get("regime"),
+            "macro_updated":    ctx["macro"].get("updated_at"),
+            "geo_updated":      ctx["geo"].get("updated_at"),
+            "earnings_updated": ctx["earnings"].get("updated_at"),
+            "breadth_updated":  ctx["breadth"].get("updated_at"),
+            "social_updated":   ctx["social"].get("updated_at"),
+        },
+    }))
+
+
+@app.get("/api/agent-flow")
+async def api_agent_flow():
+    """Static pipeline structure: nodes and edges for flow diagram rendering."""
+    return JSONResponse({
+        "nodes": [
+            {"id": "fetch_data",        "label": "Data Fetch",   "group": "data"},
+            {"id": "parallel_analyze",  "label": "News + Tech",  "group": "analysis"},
+            {"id": "aggregate_signals", "label": "Signal Agg",   "group": "analysis"},
+            {"id": "decide",            "label": "Decision",     "group": "decision"},
+            {"id": "validate_decision", "label": "Validator",    "group": "decision"},
+            {"id": "assess_risk",       "label": "Risk Check",   "group": "risk"},
+            {"id": "size_position",     "label": "Sizing",       "group": "risk"},
+            {"id": "check_execution",   "label": "Execution",    "group": "execution"},
+            {"id": "alert",             "label": "Alert",        "group": "execution"},
+        ],
+        "edges": [
+            {"from": "fetch_data",        "to": "parallel_analyze"},
+            {"from": "parallel_analyze",  "to": "aggregate_signals"},
+            {"from": "aggregate_signals", "to": "decide"},
+            {"from": "decide",            "to": "validate_decision"},
+            {"from": "validate_decision", "to": "assess_risk"},
+            {"from": "assess_risk",       "to": "size_position"},
+            {"from": "size_position",     "to": "check_execution"},
+            {"from": "check_execution",   "to": "alert"},
+        ],
+    })
+
+
+@app.get("/api/pipeline-run")
+async def api_pipeline_run(ticker: str = None):
+    """Run a paper-mode pipeline audit and return a detailed per-node trace."""
+    global _last_trace
+    t = (ticker or TICKER).upper()
+    try:
+        from graph import run_pipeline_audit, make_initial_state as _mis
+        import time as _time
+        loop = asyncio.get_running_loop()
+        initial_state = _mis(t, paper_trading=True)
+        t0 = _time.monotonic()
+        audit = await loop.run_in_executor(_executor, run_pipeline_audit, initial_state)
+        elapsed_ms = (_time.monotonic() - t0) * 1000
+
+        nodes = [
+            {
+                "name":    step["step"],
+                "status":  "completed" if step["changed"] else "pass-through",
+                "time_ms": 0,
+                "outputs": _json_safe(step["changed"]),
+            }
+            for step in audit.get("steps", [])
+        ]
+        final_snap = audit.get("final", {})
+        _last_trace = {
+            "ticker":        t,
+            "timestamp":     datetime.now().isoformat(),
+            "nodes":         nodes,
+            "total_time_ms": round(elapsed_ms),
+            "final_signal":  final_snap.get("signal", "HOLD"),
+            "confidence":    final_snap.get("confidence", 0),
+            "alert_fired":   False,
+            "source":        "audit",
+        }
+        return JSONResponse(_json_safe(_last_trace))
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 

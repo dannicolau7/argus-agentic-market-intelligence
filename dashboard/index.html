@@ -53,8 +53,9 @@
     .right-col { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 
     /* ── Tabs ── */
-    .tab-bar { display: flex; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; }
-    .tab { padding: 8px 14px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; }
+    .tab-bar { display: flex; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; overflow-x: auto; scrollbar-width: none; }
+    .tab-bar::-webkit-scrollbar { display: none; }
+    .tab { padding: 8px 10px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; white-space: nowrap; flex-shrink: 0; }
     .tab.active { color: var(--blue); border-bottom-color: var(--blue); }
     .tab:hover:not(.active) { color: var(--text); }
 
@@ -155,6 +156,49 @@
     ::-webkit-scrollbar { width: 3px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    /* ── Alerts tab ── */
+    #alerts-list { flex: 1; overflow-y: auto; }
+    .alert-row { display: grid; grid-template-columns: auto auto 1fr auto auto; gap: 8px; padding: 8px 12px; border-bottom: 1px solid #21262d; align-items: center; }
+    .alert-row:hover { background: var(--surface); }
+    .alert-time   { color: var(--muted); font-size: 10px; white-space: nowrap; }
+    .alert-ticker { font-weight: 700; font-size: 13px; color: var(--blue); }
+    .alert-price  { font-size: 12px; font-weight: 600; }
+    .alert-conf   { font-size: 10px; color: var(--muted); }
+    .alert-sig    { padding: 2px 8px; border-radius: 10px; font-weight: 700; font-size: 10px; }
+    .a-buy  { background: #1a4731; color: var(--green); }
+    .a-sell { background: #4d1a1a; color: var(--red); }
+
+    /* ── Opportunities tab ── */
+    #opportunities-list { flex: 1; overflow-y: auto; }
+    .opp-row { padding: 9px 12px; border-bottom: 1px solid #21262d; cursor: pointer; }
+    .opp-row:hover { background: var(--surface); }
+    .opp-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px; }
+    .opp-ticker { font-weight: 700; font-size: 13px; color: var(--blue); }
+    .opp-score  { font-weight: 700; font-size: 12px; color: var(--gold); }
+    .opp-meta   { display: flex; gap: 10px; font-size: 10px; color: var(--muted); margin-bottom: 3px; }
+    .opp-signals { font-size: 10px; color: #484f58; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .setup-badge { padding: 1px 6px; border-radius: 8px; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
+    .s-breakout  { background:#2d2a1a; color:var(--gold); }
+    .s-momentum  { background:#1a2a4d; color:var(--blue); }
+    .s-earnings  { background:#2a1a4d; color:var(--purple); }
+    .s-recovery  { background:#1a4731; color:var(--green); }
+    .s-options   { background:#3d1a1a; color:var(--red); }
+
+    /* ── Intel tab ── */
+    #intel-content { overflow-y: auto; flex: 1; }
+    .intel-section { margin-bottom: 14px; }
+    .intel-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }
+    .intel-card { background: var(--surface); border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px; }
+    .intel-card-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin-bottom: 3px; }
+    .intel-card-value { font-size: 16px; font-weight: 700; }
+    .intel-card-sub   { font-size: 10px; color: var(--muted); margin-top: 1px; }
+    .intel-tag  { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 10px; font-weight: 700; margin: 2px; }
+    .tag-bullish { background:#1a4731; color:var(--green); }
+    .tag-bearish { background:#4d1a1a; color:var(--red); }
+    .tag-neutral { background:#21262d; color:var(--muted); }
+    .earnings-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #21262d; font-size: 11px; }
+    .opts-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #21262d; font-size: 11px; }
   </style>
 </head>
 <body>
@@ -188,7 +232,11 @@
       <div class="tab" onclick="switchTab('history')">History</div>
       <div class="tab" onclick="switchTab('news')">News</div>
       <div class="tab" onclick="switchTab('watchlist')">Watchlist</div>
-      <div class="tab" onclick="switchTab('performance')">Performance</div>
+      <div class="tab" onclick="switchTab('performance')">Perf</div>
+      <div class="tab" onclick="switchTab('alerts')">Alerts</div>
+      <div class="tab" onclick="switchTab('opportunities')">Opps</div>
+      <div class="tab" onclick="switchTab('intel')">Intel</div>
+      <div class="tab" onclick="switchTab('agents')">Agents</div>
     </div>
 
     <!-- Signal tab -->
@@ -339,6 +387,77 @@
       <div id="bt-stats" style="display:none;display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px;"></div>
       <div id="bt-results"></div>
     </div>
+    <!-- Alerts tab -->
+    <div class="tab-panel" id="tab-alerts">
+      <div style="padding:8px 12px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);">Recent BUY / SELL Signals</span>
+        <span id="alerts-total" style="font-size:10px;color:#484f58;"></span>
+      </div>
+      <div id="alerts-list"><div style="padding:20px;text-align:center;color:var(--muted);">Loading...</div></div>
+    </div>
+
+    <!-- Opportunities tab -->
+    <div class="tab-panel" id="tab-opportunities">
+      <div style="padding:8px 12px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);">Momentum Screener</span>
+        <span id="opp-updated" style="font-size:10px;color:#484f58;"></span>
+      </div>
+      <div id="opportunities-list"><div style="padding:20px;text-align:center;color:var(--muted);">Loading...</div></div>
+    </div>
+
+    <!-- Intel tab -->
+    <div class="tab-panel" id="tab-intel">
+      <div id="intel-content" style="padding:12px;">
+        <div style="padding:20px;text-align:center;color:var(--muted);">Loading...</div>
+      </div>
+    </div>
+
+    <!-- Agents tab -->
+    <div class="tab-panel" id="tab-agents">
+      <div style="padding:12px;">
+
+        <!-- Section A: Pipeline Flow -->
+        <div style="margin-bottom:16px;">
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+            <span style="font-size:13px;font-weight:600;color:var(--fg);">Pipeline Flow</span>
+            <span id="agent-trace-ts" style="font-size:11px;color:var(--muted);"></span>
+            <div style="margin-left:auto;display:flex;gap:8px;align-items:center;">
+              <input id="pipeline-ticker" type="text" placeholder="BZAI"
+                style="width:70px;background:#161b22;border:1px solid #30363d;color:var(--fg);border-radius:4px;padding:3px 6px;font-size:12px;"/>
+              <button onclick="runPipelineAudit()"
+                style="background:#238636;color:#fff;border:none;border-radius:4px;padding:4px 10px;font-size:12px;cursor:pointer;">
+                ▶ Run Audit
+              </button>
+            </div>
+          </div>
+          <div id="pipeline-flow" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:10px;background:#161b22;border-radius:6px;min-height:48px;">
+            <span style="color:var(--muted);font-size:12px;">No pipeline run yet — click Run Audit or wait for next scan.</span>
+          </div>
+        </div>
+
+        <!-- Section B: Trace table -->
+        <div style="margin-bottom:16px;">
+          <span style="font-size:13px;font-weight:600;color:var(--fg);">Last Trace</span>
+          <div id="trace-table" style="margin-top:8px;font-size:12px;">
+            <span style="color:var(--muted);">No trace yet.</span>
+          </div>
+        </div>
+
+        <!-- Section C: Background Agents -->
+        <div>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+            <span style="font-size:13px;font-weight:600;color:var(--fg);">Background Agents</span>
+            <span id="agents-ts" style="font-size:11px;color:var(--muted);"></span>
+          </div>
+          <div id="agents-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;">
+            <span style="color:var(--muted);font-size:12px;">Loading...</span>
+          </div>
+          <div id="agents-context" style="margin-top:10px;font-size:11px;color:var(--muted);"></div>
+        </div>
+
+      </div>
+    </div>
+
   </div>
 
 </div><!-- end .layout -->
@@ -347,7 +466,7 @@
 // ── Tab switching ──────────────────────────────────────────────────────────────
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach((t,i) => {
-    const names = ['signal','history','news','watchlist','performance'];
+    const names = ['signal','history','news','watchlist','performance','alerts','opportunities','intel','agents'];
     t.classList.toggle('active', names[i] === name);
   });
   document.querySelectorAll('.tab-panel').forEach(p => {
@@ -690,6 +809,197 @@ async function runBacktest() {
   }
 }
 
+// ── Fetch alerts ────────────────────────────────────────────────────────────────
+async function fetchAlerts() {
+  try {
+    const res  = await fetch('/api/alerts');
+    const data = await res.json();
+    renderAlerts(data.alerts || [], data.total || 0);
+  } catch(e) { console.error('fetchAlerts:', e); }
+}
+
+function renderAlerts(alerts, total) {
+  setText('alerts-total', total + ' total signals');
+  const list = document.getElementById('alerts-list');
+  if (!alerts.length) {
+    list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted);">No BUY/SELL signals yet.</div>';
+    return;
+  }
+  list.innerHTML = alerts.map(a => {
+    const sig   = a.signal || 'HOLD';
+    const cls   = 'a-' + sig.toLowerCase();
+    const ts    = a.timestamp ? new Date(a.timestamp).toLocaleString() : '—';
+    const price = a.current_price || a.price || 0;
+    return `<div class="alert-row">
+      <span class="alert-time">${ts}</span>
+      <span class="alert-ticker">${a.ticker || '—'}</span>
+      <span class="alert-price">${price ? '$' + Number(price).toFixed(4) : '—'}</span>
+      <span class="alert-conf">${a.confidence || 0}%</span>
+      <span class="alert-sig ${cls}">${sig}</span>
+    </div>`;
+  }).join('');
+}
+
+// ── Fetch opportunities ─────────────────────────────────────────────────────────
+async function fetchOpportunities() {
+  try {
+    const res  = await fetch('/api/momentum');
+    const data = await res.json();
+    renderOpportunities(data.candidates || [], data.updated_at);
+  } catch(e) { console.error('fetchOpportunities:', e); }
+}
+
+function renderOpportunities(candidates, updatedAt) {
+  if (updatedAt) {
+    const d = new Date(updatedAt);
+    setText('opp-updated', 'Updated ' + d.toLocaleTimeString());
+  }
+  const list = document.getElementById('opportunities-list');
+  if (!candidates.length) {
+    list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted);">No candidates yet — screener runs every 2h during market hours.</div>';
+    return;
+  }
+  const setupClass = s => ({ breakout:'s-breakout', momentum:'s-momentum', earnings:'s-earnings', recovery:'s-recovery', options:'s-options' }[s] || 's-momentum');
+  list.innerHTML = candidates.map(c => {
+    const rsColor = c.rs_5d >= 5 ? '#3fb950' : c.rs_5d >= 0 ? '#8b949e' : '#f85149';
+    const rsiColor = c.rsi < 35 ? '#3fb950' : c.rsi > 65 ? '#f85149' : '#8b949e';
+    return `<div class="opp-row" onclick="setActiveTicker('${c.ticker}'); switchTab('signal');">
+      <div class="opp-header">
+        <span class="opp-ticker">${c.ticker}</span>
+        <span class="opp-score">⭐ ${c.score}/100</span>
+      </div>
+      <div class="opp-meta">
+        <span class="setup-badge ${setupClass(c.setup_type)}">${c.setup_type}</span>
+        <span>$${Number(c.price || 0).toFixed(2)}</span>
+        <span style="color:${rsiColor}">RSI ${c.rsi || '—'}</span>
+        <span style="color:${rsColor}">RS ${c.rs_5d >= 0 ? '+' : ''}${(c.rs_5d || 0).toFixed(1)}%</span>
+        <span style="color:#8b949e">Vol ${c.rvol || 1}×</span>
+      </div>
+      <div class="opp-signals">${c.signals || ''}</div>
+    </div>`;
+  }).join('');
+}
+
+// ── Fetch intel ─────────────────────────────────────────────────────────────────
+async function fetchIntel() {
+  try {
+    const res  = await fetch('/api/intel');
+    const data = await res.json();
+    renderIntel(data);
+  } catch(e) { console.error('fetchIntel:', e); }
+}
+
+function renderIntel(d) {
+  const macro   = d.macro   || {};
+  const geo     = d.geo     || {};
+  const earnings= d.earnings|| {};
+  const breadth = d.breadth || {};
+  const social  = d.social  || {};
+
+  const biasColor = b => b === 'BULLISH' ? '#3fb950' : b === 'BEARISH' ? '#f85149' : '#d29922';
+  const tagCls    = b => b === 'BULLISH' ? 'tag-bullish' : b === 'BEARISH' ? 'tag-bearish' : 'tag-neutral';
+
+  // Macro cards
+  const vix    = macro.vix   != null ? macro.vix.toFixed(1) : '—';
+  const vixCol = macro.vix   != null ? (macro.vix >= 30 ? '#f85149' : macro.vix >= 25 ? '#d29922' : '#3fb950') : '#8b949e';
+  const spyChg = macro.spy_change_pct != null ? (macro.spy_change_pct >= 0 ? '+' : '') + macro.spy_change_pct.toFixed(2) + '%' : '—';
+  const spyCol = macro.spy_change_pct != null ? (macro.spy_change_pct >= 0 ? '#3fb950' : '#f85149') : '#8b949e';
+
+  let html = `
+  <div class="intel-section">
+    <div class="section-title">Macro Regime</div>
+    <div class="intel-grid">
+      <div class="intel-card">
+        <div class="intel-card-label">VIX</div>
+        <div class="intel-card-value" style="color:${vixCol}">${vix}</div>
+        <div class="intel-card-sub">${macro.vix >= 30 ? 'High fear' : macro.vix >= 25 ? 'Elevated' : 'Calm'}</div>
+      </div>
+      <div class="intel-card">
+        <div class="intel-card-label">SPY Today</div>
+        <div class="intel-card-value" style="color:${spyCol}">${spyChg}</div>
+        <div class="intel-card-sub">${macro.bias || '—'}</div>
+      </div>
+    </div>
+    ${macro.themes && macro.themes.length ? `<div style="font-size:11px;color:var(--muted);margin-bottom:6px;">${macro.themes.map(t => `<span class="intel-tag tag-neutral">${t}</span>`).join('')}</div>` : ''}
+  </div>
+
+  <div class="intel-section">
+    <div class="section-title">Geo / Geopolitical</div>
+    <div style="font-size:11px;margin-bottom:6px;">
+      Bias: <span style="font-weight:700;color:${biasColor(geo.overall_bias)}">${geo.overall_bias || '—'}</span>
+      ${geo.hot_sectors && geo.hot_sectors.length ? `&nbsp;|&nbsp; Favor: <span style="color:var(--green)">${geo.hot_sectors.slice(0,3).join(', ')}</span>` : ''}
+    </div>
+    ${geo.risk_summary ? `<div style="font-size:11px;color:#484f58;padding:2px 0;border-bottom:1px solid #21262d">⚠️ ${geo.risk_summary}</div>` : ''}
+    ${(geo.events || []).slice(0,2).map(e => `<div style="font-size:10px;color:#484f58;padding:2px 0;border-bottom:1px solid #21262d">${e.direction === 'BEARISH' ? '🔴' : e.direction === 'BULLISH' ? '🟢' : '🟡'} ${(e.headline || '').slice(0,70)}</div>`).join('')}
+  </div>
+
+  <div class="intel-section">
+    <div class="section-title">Market Breadth</div>
+    <div class="intel-grid">
+      <div class="intel-card">
+        <div class="intel-card-label">A/D Ratio</div>
+        <div class="intel-card-value" style="font-size:14px">${breadth.ad_ratio != null ? breadth.ad_ratio.toFixed(2) : '—'}</div>
+        <div class="intel-card-sub">${breadth.health || '—'}</div>
+      </div>
+      <div class="intel-card">
+        <div class="intel-card-label">Above 200-MA</div>
+        <div class="intel-card-value" style="font-size:14px;color:var(--green)">${breadth.pct_above_200ma != null ? breadth.pct_above_200ma.toFixed(0) + '%' : '—'}</div>
+        <div class="intel-card-sub">SPY holdings</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="intel-section">
+    <div class="section-title">Earnings Calendar</div>`;
+
+  const upcoming = (earnings.upcoming || []).slice(0, 8);
+  if (upcoming.length) {
+    html += upcoming.map(e => {
+      const dir = e.direction || 'NEUTRAL';
+      return `<div class="earnings-row">
+        <span style="font-weight:700;color:var(--blue)">${e.ticker}</span>
+        <span style="color:#8b949e">${e.date || ''}</span>
+        <span>${e.days != null ? 'in ' + e.days + 'd' : ''}</span>
+        <span class="intel-tag ${tagCls(dir)}" style="font-size:9px">${dir}</span>
+      </div>`;
+    }).join('');
+  } else {
+    html += '<div style="font-size:11px;color:#484f58;padding:4px 0;">No upcoming earnings loaded.</div>';
+  }
+
+  html += `</div>
+  <div class="intel-section">
+    <div class="section-title">Unusual Options Flow</div>`;
+
+  const opts = (social.unusual_opts || []).slice(0, 8);
+  if (opts.length) {
+    html += opts.map(o => {
+      const bias = o.bias || 'NEUTRAL';
+      const cpr  = o.call_put_ratio != null ? o.call_put_ratio.toFixed(1) + '× C/P' : '';
+      return `<div class="opts-row">
+        <span style="font-weight:700;color:var(--blue)">${o.ticker}</span>
+        <span style="color:#8b949e;font-size:10px">${cpr}</span>
+        <span class="intel-tag ${tagCls(bias)}" style="font-size:9px">${bias}</span>
+      </div>`;
+    }).join('');
+  } else {
+    html += '<div style="font-size:11px;color:#484f58;padding:4px 0;">No unusual options flow detected.</div>';
+  }
+
+  const trendingArr = social.trending || [];
+  if (trendingArr.length) {
+    html += `<div class="section-title" style="margin-top:10px;">Trending Tickers</div>`;
+    html += `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;">${trendingArr.slice(0,15).map(t => {
+      const sym = (typeof t === 'object') ? (t.ticker || '') : String(t);
+      const chg = (typeof t === 'object' && t.change_pct != null) ? ` ${t.change_pct >= 0 ? '+' : ''}${t.change_pct.toFixed(1)}%` : '';
+      return `<span class="intel-tag tag-neutral" style="cursor:pointer" onclick="setActiveTicker('${sym}');switchTab('signal')" title="${sym}${chg}">${sym}${chg}</span>`;
+    }).join('')}</div>`;
+  }
+
+  html += '</div>';
+  document.getElementById('intel-content').innerHTML = html;
+}
+
 // ── Update signal UI ───────────────────────────────────────────────────────────
 function updateSignalUI(state, history) {
   const signal  = state.signal || 'HOLD';
@@ -981,21 +1291,133 @@ async function triggerRun() {
   }
 }
 
+// ── Agent monitor ──────────────────────────────────────────────────────────────
+
+const STATUS_COLOR = { completed:'#3fb950', vetoed:'#f85149', blocked:'#f0883e',
+                        skipped:'#8b949e', 'pass-through':'#30363d', unknown:'#8b949e' };
+const STATUS_DOT   = { running:'#58a6ff', stopped:'#f85149', error:'#f85149',
+                        cancelled:'#8b949e', starting:'#d29922', unknown:'#30363d' };
+
+async function fetchAgentTrace() {
+  try {
+    const d = await fetch('/api/agent-trace').then(r=>r.json());
+    if (!d.ticker) return;
+    // Update header timestamp
+    const ts = d.timestamp ? new Date(d.timestamp).toLocaleTimeString() : '';
+    document.getElementById('agent-trace-ts').textContent =
+      `${d.ticker}  ${d.final_signal||'?'}  conf=${d.confidence||0}  ${d.total_time_ms||0}ms  (${ts})`;
+
+    // Pipeline flow nodes
+    const flow = document.getElementById('pipeline-flow');
+    if (d.nodes && d.nodes.length) {
+      flow.innerHTML = d.nodes.map((n,i) => {
+        const col = STATUS_COLOR[n.status] || '#8b949e';
+        const label = n.name.replace(/_/g,' ');
+        const tip = `${n.status} · ${n.time_ms}ms`;
+        return `${i>0?'<span style="color:#30363d;font-size:18px;">›</span>':''}
+          <div title="${tip}" style="display:inline-flex;flex-direction:column;align-items:center;gap:2px;cursor:default;">
+            <div style="width:10px;height:10px;border-radius:50%;background:${col};"></div>
+            <span style="font-size:10px;color:${col};white-space:nowrap;">${label}</span>
+            <span style="font-size:9px;color:var(--muted);">${n.time_ms}ms</span>
+          </div>`;
+      }).join('');
+    }
+
+    // Trace table
+    const tbl = document.getElementById('trace-table');
+    if (d.nodes && d.nodes.length) {
+      tbl.innerHTML = `<table style="width:100%;border-collapse:collapse;">
+        <thead><tr style="color:var(--muted);text-align:left;">
+          <th style="padding:4px 8px;border-bottom:1px solid #21262d;">Node</th>
+          <th style="padding:4px 8px;border-bottom:1px solid #21262d;">Status</th>
+          <th style="padding:4px 8px;border-bottom:1px solid #21262d;">ms</th>
+          <th style="padding:4px 8px;border-bottom:1px solid #21262d;">Key Outputs</th>
+        </tr></thead><tbody>` +
+        d.nodes.map(n => {
+          const col = STATUS_COLOR[n.status] || '#8b949e';
+          const outs = n.outputs ? Object.entries(n.outputs).map(([k,v]) => {
+            const vStr = v === null ? 'null' : typeof v === 'object' ? JSON.stringify(v).slice(0,60) : String(v).slice(0,60);
+            return `<span style="color:var(--muted);">${k}:</span> ${vStr}`;
+          }).join('  ') : '';
+          return `<tr style="border-bottom:1px solid #161b22;">
+            <td style="padding:4px 8px;color:var(--fg);">${n.name.replace(/_/g,' ')}</td>
+            <td style="padding:4px 8px;color:${col};">${n.status}</td>
+            <td style="padding:4px 8px;color:var(--muted);">${n.time_ms}</td>
+            <td style="padding:4px 8px;color:var(--fg);font-size:11px;max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${outs}</td>
+          </tr>`;
+        }).join('') + '</tbody></table>';
+    }
+  } catch(e) { console.warn('agent-trace error:', e); }
+}
+
+async function fetchAgentStatus() {
+  try {
+    const d = await fetch('/api/agent-status').then(r=>r.json());
+    if (!d.agents) return;
+    document.getElementById('agents-ts').textContent =
+      new Date().toLocaleTimeString();
+
+    const grid = document.getElementById('agents-grid');
+    grid.innerHTML = d.agents.map(a => {
+      const dot = STATUS_DOT[a.status] || '#30363d';
+      const alive = a.alive ? '●' : '○';
+      const err = a.last_error ? `<div style="color:#f85149;font-size:10px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${a.last_error}">${a.last_error.slice(0,50)}</div>` : '';
+      return `<div style="background:#161b22;border:1px solid #21262d;border-radius:6px;padding:8px 10px;">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span style="color:${dot};font-size:14px;">${alive}</span>
+          <span style="font-size:12px;font-weight:600;color:var(--fg);">${a.label}</span>
+          ${a.restarts>0?`<span style="margin-left:auto;font-size:10px;color:#d29922;">↺${a.restarts}</span>`:''}
+        </div>
+        <div style="font-size:11px;color:${dot};margin-top:2px;">${a.status}</div>
+        ${err}
+      </div>`;
+    }).join('');
+
+    const ctx = d.context || {};
+    document.getElementById('agents-context').textContent =
+      `Macro: ${ctx.macro_regime||'?'} · ` +
+      `Macro upd: ${ctx.macro_updated?new Date(ctx.macro_updated).toLocaleTimeString():'—'} · ` +
+      `Earnings: ${ctx.earnings_updated?new Date(ctx.earnings_updated).toLocaleTimeString():'—'} · ` +
+      `Social: ${ctx.social_updated?new Date(ctx.social_updated).toLocaleTimeString():'—'}`;
+  } catch(e) { console.warn('agent-status error:', e); }
+}
+
+async function runPipelineAudit() {
+  const ticker = (document.getElementById('pipeline-ticker').value || 'BZAI').toUpperCase();
+  const btn = document.querySelector('#tab-agents button');
+  btn.textContent = '⏳ Running…';
+  btn.disabled = true;
+  try {
+    await fetch(`/api/pipeline-run?ticker=${ticker}`);
+    await fetchAgentTrace();
+  } catch(e) { console.warn('pipeline-run error:', e); }
+  btn.textContent = '▶ Run Audit';
+  btn.disabled = false;
+}
+
 // ── Bootstrap ──────────────────────────────────────────────────────────────────
 async function init() {
   await Promise.all([fetchBars(), fetchState(), fetchNews(), fetchWatchlist(),
-                     fetchPerformance(), fetchSectors(), fetchPremarket()]);
+                     fetchPerformance(), fetchSectors(), fetchPremarket(),
+                     fetchAlerts(), fetchOpportunities(), fetchIntel()]);
   resizeCharts();
+  fetchAgentTrace();
+  fetchAgentStatus();
 }
 
 init();
-setInterval(fetchState,       30000);   // state every 30s
-setInterval(fetchNews,       120000);   // news every 2 min
-setInterval(fetchWatchlist,   60000);   // watchlist every 1 min
-setInterval(fetchBars,       300000);   // bars every 5 min
-setInterval(fetchPerformance, 60000);   // performance every 1 min
-setInterval(fetchSectors,    300000);   // sectors every 5 min
-setInterval(fetchPremarket,  300000);   // pre-market every 5 min
+setInterval(fetchState,          30000);   // state every 30s
+setInterval(fetchNews,          120000);   // news every 2 min
+setInterval(fetchWatchlist,      60000);   // watchlist every 1 min
+setInterval(fetchBars,          300000);   // bars every 5 min
+setInterval(fetchPerformance,    60000);   // performance every 1 min
+setInterval(fetchSectors,       300000);   // sectors every 5 min
+setInterval(fetchPremarket,     300000);   // pre-market every 5 min
+setInterval(fetchAlerts,         60000);   // alerts every 1 min
+setInterval(fetchOpportunities, 120000);   // momentum every 2 min
+setInterval(fetchIntel,         120000);   // intel every 2 min
+setInterval(fetchAgentTrace,      5000);   // pipeline trace every 5s
+setInterval(fetchAgentStatus,   10000);   // agent status every 10s
 </script>
 </body>
 </html>
