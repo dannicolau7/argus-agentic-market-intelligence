@@ -25,6 +25,7 @@ from config import ANTHROPIC_API_KEY
 import performance_tracker as pt
 import world_context as wctx
 from alerts import send_whatsapp
+from intelligence_hub import hub
 
 LEARNINGS_PATH = Path(__file__).parent / "data" / "learnings.json"
 ET = ZoneInfo("America/New_York")
@@ -224,9 +225,13 @@ Respond ONLY with valid JSON:
             learnings["insights"] = insights[-5:]   # keep last 5
 
         # Compute per-signal weight adjustments from historical win data
-        learnings["signal_weights"] = _compute_signal_weights(rows, stats_30)
+        signal_weights = _compute_signal_weights(rows, stats_30)
+        learnings["signal_weights"] = signal_weights
 
         save_learnings(learnings)
+
+        # Update IntelligenceHub with EMA-blended weights (80% old, 20% new)
+        hub.update_reflection_weights(signal_weights)
 
         # Inject adjusted threshold into world_context for decision_agent to read
         wctx.update_macro({"confidence_adj": int(result.get("confidence_adj", 0))})
@@ -274,6 +279,33 @@ def _send_daily_summary(result: dict, stats: dict, paper: bool = False):
         print("🧠 [Reflection] Daily summary sent via WhatsApp")
     except Exception as e:
         print(f"⚠️  [Reflection] WhatsApp failed: {e}")
+
+    # ── Weekly report (every Sunday) ──────────────────────────────────────────
+    if datetime.now(ET).weekday() == 6:   # Sunday
+        _send_weekly_report(stats, paper)
+
+
+def _send_weekly_report(stats: dict, paper: bool = False):
+    """Send weekly performance WhatsApp every Sunday."""
+    if paper:
+        return
+    try:
+        stats_7  = pt.get_stats(lookback_days=7,  paper=paper)
+        stats_30 = pt.get_stats(lookback_days=30, paper=paper)
+        weights  = hub.get_reflection_weights()
+        boosted  = [f"{k} ×{v:.1f}" for k, v in weights.items() if v > 1.05]
+        reduced  = [f"{k} ×{v:.1f}" for k, v in weights.items() if v < 0.95]
+        body = (
+            f"📅 *Weekly Signal Report*\n"
+            f"7-day:  *{stats_7.get('win_rate','?')}%* win rate  ({stats_7.get('total',0)} signals)\n"
+            f"30-day: *{stats_30.get('win_rate','?')}%* win rate  ({stats_30.get('total',0)} signals)\n\n"
+            f"🔼 Boosted signals: {', '.join(boosted) or 'none'}\n"
+            f"🔽 Reduced signals: {', '.join(reduced) or 'none'}\n"
+        )
+        send_whatsapp(body)
+        print("🧠 [Reflection] Weekly report sent via WhatsApp")
+    except Exception as e:
+        print(f"⚠️  [Reflection] Weekly report failed: {e}")
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────

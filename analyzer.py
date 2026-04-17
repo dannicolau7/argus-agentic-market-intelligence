@@ -15,6 +15,7 @@ from langsmith import traceable
 from config import ANTHROPIC_API_KEY
 from self_learner import get_weight_adjustments, get_summary as sl_summary
 import world_context as wctx
+from intelligence_hub import hub
 
 _client = None
 
@@ -212,6 +213,47 @@ def analyze_market(context: dict) -> dict:
     elif consensus == "BEARISH" and bull_sigs:
         conflict_lines = "\n".join(f"  ⚠️  {n} (weight {w:.2f})" for n, w in bull_sigs)
 
+    # ── Hub-injected context sections ─────────────────────────────────────────
+    # Portfolio section
+    portfolio = hub.get_portfolio_context(ticker)
+    if portfolio.get("already_open"):
+        portfolio_section = (
+            f"\n=== PORTFOLIO CONTEXT ===\n"
+            f"⚠️  {ticker} ALREADY IN PORTFOLIO — adding more would double exposure.\n"
+            f"Open positions ({portfolio['open_count']}): {', '.join(portfolio['open_tickers'][:5])}\n"
+        )
+    elif portfolio.get("open_count", 0) > 0:
+        portfolio_section = (
+            f"\n=== PORTFOLIO CONTEXT ===\n"
+            f"Open positions: {portfolio['open_count']} "
+            f"({', '.join(portfolio['open_tickers'][:3])})\n"
+        )
+    else:
+        portfolio_section = ""
+
+    # Pre-identification section (EOD scanner)
+    tomorrow_setup = hub.get_tomorrow_setup(ticker)
+    if tomorrow_setup:
+        pre_section = (
+            f"\n=== EOD PRE-IDENTIFICATION ===\n"
+            f"✅ {ticker} was flagged by yesterday's EOD scanner:\n"
+            f"  Setup type: {tomorrow_setup.get('setup_type', '?')}\n"
+            f"  EOD score: {tomorrow_setup.get('score', '?')}\n"
+            f"  Reason: {tomorrow_setup.get('reason', 'n/a')}\n"
+        )
+    else:
+        pre_section = ""
+
+    # Regime thresholds section
+    thresholds = hub.get_regime_thresholds()
+    regime_section = (
+        f"\n=== ACTIVE REGIME THRESHOLDS ({thresholds.get('regime', 'NORMAL')}) ===\n"
+        f"RSI oversold < {thresholds['rsi_oversold']}  |  overbought > {thresholds['rsi_overbought']}\n"
+        f"Volume spike min: {thresholds['volume_spike_min']}×  |  "
+        f"Agreement min: {thresholds['agreement_min']}%  |  "
+        f"Confidence cap: {thresholds['confidence_cap']}\n"
+    )
+
     # Strongest single signal
     all_dominant = bull_sigs if consensus in ("BULLISH", "NEUTRAL") else bear_sigs
     top_sig_name = max(all_dominant, key=lambda x: x[1])[0] if all_dominant else "none"
@@ -238,6 +280,7 @@ def analyze_market(context: dict) -> dict:
 
     prompt = f"""You are an elite quantitative momentum trader.
 The signal aggregator has already processed all data sources. Use its consensus as your starting point.
+{portfolio_section}{pre_section}{regime_section}
 
 === SECTION 1 — CONSENSUS PICTURE ===
 Signal aggregator found:

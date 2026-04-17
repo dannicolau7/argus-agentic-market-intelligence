@@ -10,6 +10,7 @@ Threshold overrides (applied in order of priority):
 
 from langsmith import traceable
 from analyzer import analyze_market
+from intelligence_hub import hub
 
 CONFIDENCE_THRESHOLD      = 60
 NEWS_CONFIDENCE_THRESHOLD = 52
@@ -66,6 +67,43 @@ def decision_node(state: dict) -> dict:
     ticker = state["ticker"]
     price  = state.get("current_price", 0.0)
 
+    # ── Alert deduplication ──────────────────────────────────────────────────
+    news_triggered = state.get("news_triggered", False)
+    major_catalyst = state.get("major_catalyst", False)
+    if hub.was_alerted_today(ticker) and not (news_triggered or major_catalyst):
+        print(f"⏭️  [DecisionAgent] {ticker} already alerted today — HOLD (dedup)")
+        threshold = _get_threshold(state)
+        return {
+            **state,
+            "signal":           "HOLD",
+            "confidence":       0,
+            "model_signal":     "DEDUP",
+            "model_confidence": 0,
+            "threshold_used":   threshold,
+            "decision_delta":   "dedup: already alerted today",
+            "setup_type":       state.get("setup_type", "general"),
+            "entry_zone":       f"${price:.4f}",
+            "entry_low":        price,
+            "entry_high":       price,
+            "targets":          [],
+            "stop_loss":        round(price * 0.95, 4),
+            "stop_pct":         -5.0,
+            "reasoning":        f"{ticker} already alerted today — cooling off.",
+            "action_plan":      "",
+            "rr_ratio":         0.0,
+            "trade_horizon":    "swing",
+            "horizon_reasoning":"",
+            "main_risk":        "",
+            "top_3_signals":    [],
+            "should_alert":     False,
+            "price":            price,
+        }
+
+    # ── Portfolio context ────────────────────────────────────────────────────
+    portfolio = hub.get_portfolio_context(ticker)
+    if portfolio.get("already_open"):
+        print(f"⚠️  [DecisionAgent] {ticker} already in portfolio — will cap confidence")
+
     print(f"🧠 [DecisionAgent] Analyzing {ticker} @ ${price:.4f}...")
 
     # Capture deterministic score before LLM runs
@@ -77,6 +115,18 @@ def decision_node(state: dict) -> dict:
         model_signal = result["signal"]
         confidence   = result["confidence"]
         threshold    = _get_threshold(state)
+
+        # ── Regime confidence cap ─────────────────────────────────────────────
+        thresholds = hub.get_regime_thresholds()
+        conf_cap   = thresholds.get("confidence_cap", 100)
+        # Extra cap if ticker already in portfolio (avoid doubling down)
+        if portfolio.get("already_open"):
+            conf_cap = min(conf_cap, 65)
+        if confidence > conf_cap:
+            print(f"⚠️  [DecisionAgent] Confidence capped {confidence} → {conf_cap} "
+                  f"(regime={thresholds.get('regime','?')}"
+                  f"{', already_open' if portfolio.get('already_open') else ''})")
+            confidence = conf_cap
 
         # Build decision_delta: human-readable explanation of model vs deterministic
         if model_signal in ("BUY", "SELL") and confidence < threshold:
@@ -115,6 +165,10 @@ def decision_node(state: dict) -> dict:
                 f"confidence={confidence}/100  det_score={det_score}  "
                 f"alert={'YES' if should_alert else 'NO'}"
             )
+
+        # ── Mark alerted for dedup (before returning) ─────────────────────────
+        if should_alert and signal in ("BUY", "SELL"):
+            hub.mark_alerted(ticker, signal)
 
         import performance_tracker as pt
         audit_state = {

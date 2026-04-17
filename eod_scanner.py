@@ -549,6 +549,20 @@ def _save_tomorrow_watchlist(setups: List[Dict], generated_at: str = "") -> None
         json.dump(payload, f, indent=2, default=str)
     print(f"💾 [EOD] Saved {len(setups)} setups → tomorrow_watchlist.json")
 
+    # Notify IntelligenceHub so other agents can react
+    try:
+        from intelligence_hub import hub as _hub
+        _hub.set("tomorrow_ready", True)
+        _hub.set("tomorrow_count", len(setups))
+        best = setups[0] if setups else {}
+        _hub.set("tomorrow_best", {
+            "ticker":     best.get("ticker", ""),
+            "score":      best.get("score", 0),
+            "setup_type": best.get("setup_type", ""),
+        })
+    except Exception as _hub_err:
+        print(f"⚠️  [EOD] Hub notify failed (non-fatal): {_hub_err}")
+
 
 def _load_tomorrow_watchlist() -> Dict:
     try:

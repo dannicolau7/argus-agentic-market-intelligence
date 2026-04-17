@@ -4,14 +4,17 @@ NewsAgent, and TechAgent into a consensus picture before DecisionAgent.
 
 Runs after parallel_analyze (news + tech), before decide.
 
-If agreement_pct < 55 sets skip_claude=True and returns HOLD immediately,
-saving a Claude API call for genuinely mixed setups.
+If agreement_pct < agreement_min (regime-adaptive, default 55) sets
+skip_claude=True and returns HOLD immediately, saving a Claude API call
+for genuinely mixed setups.
 """
 
 import json
 import os
 import time
 from datetime import datetime, timezone
+
+from intelligence_hub import hub
 
 # ── Tomorrow-watchlist cache (refresh every 5 min) ─────────────────────────────
 _twl_tickers:     set   = set()
@@ -36,6 +39,35 @@ def _get_tomorrow_tickers() -> set:
         _twl_tickers = set()
     _twl_loaded_at = time.time()
     return _twl_tickers
+
+
+# ── Signal → hub weight key mapping ───────────────────────────────────────────
+# Used to apply reflection weights to signal scores in aggregator_node.
+_SIG_TO_HUB_WEIGHT: dict = {
+    "rsi_very_oversold":  "rsi_oversold",
+    "rsi_oversold":       "rsi_oversold",
+    "rsi_very_overbought":"rsi_oversold",
+    "rsi_overbought":     "rsi_oversold",
+    "macd_bullish_cross": "macd",
+    "macd_bearish_cross": "macd",
+    "ema_golden_cross":   "ema_cross",
+    "ema_death_cross":    "ema_cross",
+    "price_above_vwap":   "vwap",
+    "price_below_vwap":   "vwap",
+    "volume_spike_3x":    "volume_spike",
+    "volume_spike_2x":    "volume_spike",
+    "gap_up_confirmed":   "gap_up",
+    "gap_down_confirmed": "gap_up",
+    "at_support":         "sr_level",
+    "breakout":           "sr_level",
+    "at_resistance":      "sr_level",
+    "breakdown":          "sr_level",
+    "obv_accumulation":   "obv",
+    "obv_distribution":   "obv",
+    "fresh_news_catalyst":"news_sentiment",
+    "edgar_filing":       "edgar",
+    "stoch_rsi_buy":      "stoch_rsi",
+}
 
 
 # ── Signal derivations ─────────────────────────────────────────────────────────
@@ -116,6 +148,11 @@ def _pattern_name(p) -> str:
 # ── Main node ──────────────────────────────────────────────────────────────────
 
 def aggregator_node(state: dict) -> dict:
+    # ── Load hub: reflection weights + regime thresholds ───────────────────────
+    hub_weights    = hub.get_reflection_weights()
+    thresholds     = hub.get_regime_thresholds()
+    agreement_min  = thresholds.get("agreement_min", 55)
+
     # ── EDGAR 8-K major catalyst override ──────────────────────────────────────
     # Must run BEFORE agreement_pct check so 8-K events never skip Claude.
     has_edgar_8k = (
@@ -259,6 +296,20 @@ def aggregator_node(state: dict) -> dict:
     if sector_s == "STRONG_HEADWIND":
         bearish_signals.append(("sector_headwind", 0.7))
 
+    # ── Apply reflection weights to signal scores ──────────────────────────────
+    def _apply_weights(signals: list) -> list:
+        out = []
+        for name, base_w in signals:
+            hub_key = _SIG_TO_HUB_WEIGHT.get(name)
+            if hub_key is None and name.startswith("candle_"):
+                hub_key = "pattern"
+            mult = hub_weights.get(hub_key, 1.0) if hub_key else 1.0
+            out.append((name, round(base_w * mult, 4)))
+        return out
+
+    bullish_signals = _apply_weights(bullish_signals)
+    bearish_signals = _apply_weights(bearish_signals)
+
     # ── Calculate consensus ────────────────────────────────────────────────────
     bull_score = sum(w for _, w in bullish_signals)
     bear_score = sum(w for _, w in bearish_signals)
@@ -281,7 +332,9 @@ def aggregator_node(state: dict) -> dict:
         f"{len(bullish_signals)} bull signals vs {len(bearish_signals)} bear signals  "
         f"(bull={bull_score:.2f}  bear={bear_score:.2f}  top={top_signal})"
     )
-    proceed_msg = "proceeding to Claude" if agreement_pct >= 55 else "HOLD (low agreement)"
+    proceed_msg = (f"proceeding to Claude"
+                   if agreement_pct >= agreement_min
+                   else f"HOLD (low agreement, regime={thresholds.get('regime','?')} min={agreement_min}%)")
     print(f"📊 [Aggregator] Agreement: {agreement_pct:.0f}% {consensus} → {proceed_msg}")
 
     updates: dict = {
@@ -296,18 +349,18 @@ def aggregator_node(state: dict) -> dict:
         "skip_reason":       "",
     }
 
-    if agreement_pct < 55 and not has_edgar_8k:
+    if agreement_pct < agreement_min and not has_edgar_8k:
         print(
-            f"⚖️  [Aggregator] Agents disagree ({agreement_pct:.0f}%) → "
+            f"⚖️  [Aggregator] Agents disagree ({agreement_pct:.0f}% < {agreement_min}% min) → "
             f"HOLD, skipping Claude call"
         )
         updates.update({
             "signal":      "HOLD",
             "confidence":  0,
-            "skip_reason": f"Agents disagree: agreement only {agreement_pct:.0f}%",
+            "skip_reason": f"Agents disagree: agreement {agreement_pct:.0f}% < {agreement_min}% ({thresholds.get('regime','?')} regime)",
             "skip_claude": True,
         })
-    elif agreement_pct < 55 and has_edgar_8k:
+    elif agreement_pct < agreement_min and has_edgar_8k:
         print(
             f"⚖️  [Aggregator] Low agreement ({agreement_pct:.0f}%) but "
             f"EDGAR 8-K present — proceeding to Claude anyway"

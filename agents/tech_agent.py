@@ -546,9 +546,14 @@ def tech_node(state: dict) -> dict:
             float(closes[-1]), state.get("prev_close", float(closes[-1]))
         )
 
-        # ── Volume spike ──────────────────────────────────────────────────────
+        # ── Volume spike (regime-adaptive threshold) ──────────────────────────
+        try:
+            from intelligence_hub import hub as _hub
+            _vol_min = _hub.get_regime_thresholds().get("volume_spike_min", 2.0)
+        except Exception:
+            _vol_min = 2.0
         vol_ratio    = (current_volume / avg_volume) if avg_volume > 0 else 1.0
-        volume_spike = vol_ratio >= 2.0
+        volume_spike = vol_ratio >= _vol_min
 
         price  = float(closes[-1])
         bb_tag = (

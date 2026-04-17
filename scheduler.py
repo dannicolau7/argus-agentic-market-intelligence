@@ -32,6 +32,7 @@ from zoneinfo import ZoneInfo
 import watchlist_manager as wl
 from alerts import send_whatsapp
 from graph import GRAPH, make_initial_state
+from intelligence_hub import hub
 from market_scanner import scan_best_of_day, scan_broad_market
 
 EST      = ZoneInfo("America/New_York")
@@ -406,9 +407,10 @@ async def scheduler_loop(paper: bool, daily_log: list, signal_memory: dict):
             now     = datetime.now(tz=EST)
             weekday = now.weekday() < 5   # Mon–Fri
 
-            # ── 3:00 AM — Overnight scan (every day)
+            # ── 3:00 AM — Overnight scan (every day) + daily hub reset
             if _in_window(3, 0) and _should_fire("overnight_news"):
                 _mark_fired("overnight_news")
+                hub.reset_daily()   # clear alert dedup so each ticker can fire once today
                 await _run_off_hours_scan(
                     "overnight_news", paper,
                     alert_threshold=85,
