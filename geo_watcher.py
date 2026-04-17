@@ -30,8 +30,8 @@ GEO_INTERVAL = 30 * 60   # 30 minutes between full RSS sweeps
 
 # RSS feeds — mix of business news and geopolitical/world news
 RSS_FEEDS = [
-    ("Reuters Business",  "https://feeds.reuters.com/reuters/businessNews"),
-    ("Reuters World",     "https://feeds.reuters.com/Reuters/worldNews"),
+    ("BBC Business",      "https://feeds.bbci.co.uk/news/business/rss.xml"),
+    ("CNBC Top News",     "https://www.cnbc.com/id/100003114/device/rss/rss.html"),
     ("AP Business",       "https://apnews.com/hub/business/rss"),
     ("AP Politics",       "https://apnews.com/hub/politics/rss"),
     ("Google Economy",    "https://news.google.com/rss/search?q=economy+federal+reserve+interest+rates&hl=en-US&gl=US&ceid=US:en"),

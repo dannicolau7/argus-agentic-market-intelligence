@@ -9,12 +9,16 @@ when deciding on individual stock signals.
 Thread-safe: all reads/writes go through a lock.
 """
 
+import copy
+import json
 import threading
 from datetime import datetime
+from pathlib import Path
 
-_lock = threading.Lock()
+_lock      = threading.Lock()
+_SAVE_PATH = Path("data/world_context.json")
 
-_ctx: dict = {
+_CTX_DEFAULT: dict = {
     "geo": {
         "events":       [],       # [{headline, sectors, direction, magnitude, impact}]
         "overall_bias": "NEUTRAL",
@@ -60,43 +64,75 @@ _ctx: dict = {
 }
 
 
+def _load_persisted() -> dict:
+    """Load last-saved context from disk, falling back to defaults."""
+    try:
+        if _SAVE_PATH.exists():
+            saved = json.loads(_SAVE_PATH.read_text())
+            # Merge saved into defaults so new keys added in code are present
+            merged = copy.deepcopy(_CTX_DEFAULT)
+            for section in merged:
+                if section in saved:
+                    merged[section].update(saved[section])
+            return merged
+    except Exception:
+        pass
+    return copy.deepcopy(_CTX_DEFAULT)
+
+
+def _save():
+    """Persist current context to disk (called after every update)."""
+    try:
+        _SAVE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _SAVE_PATH.write_text(json.dumps(_ctx, default=str))
+    except Exception:
+        pass
+
+
+_ctx: dict = _load_persisted()
+
+
 # ── Writers (one per agent) ────────────────────────────────────────────────────
 
 def update_geo(data: dict):
     with _lock:
         _ctx["geo"].update(data)
         _ctx["geo"]["updated_at"] = datetime.now().isoformat()
+        _save()
 
 
 def update_macro(data: dict):
     with _lock:
         _ctx["macro"].update(data)
         _ctx["macro"]["updated_at"] = datetime.now().isoformat()
+        _save()
 
 
 def update_earnings(data: dict):
     with _lock:
         _ctx["earnings"].update(data)
         _ctx["earnings"]["updated_at"] = datetime.now().isoformat()
+        _save()
 
 
 def update_breadth(data: dict):
     with _lock:
         _ctx["breadth"].update(data)
         _ctx["breadth"]["updated_at"] = datetime.now().isoformat()
+        _save()
 
 
 def update_social(data: dict):
     with _lock:
         _ctx["social"].update(data)
         _ctx["social"]["updated_at"] = datetime.now().isoformat()
+        _save()
 
 
 # ── Reader ─────────────────────────────────────────────────────────────────────
 
 def get() -> dict:
     with _lock:
-        import copy
         return copy.deepcopy(_ctx)
 
 
