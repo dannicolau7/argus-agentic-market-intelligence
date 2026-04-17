@@ -148,10 +148,11 @@ def build_scan_list() -> list:
     except Exception as e:
         print(f"   ⚠️  Pre-market: {e}")
 
-    # 8. Social trending
+    # 8. Social trending (stored as dicts: {"ticker": "NVDA", ...})
     try:
         import world_context as wctx
-        trending = wctx.get().get("social", {}).get("trending", [])[:5]
+        trending_raw = wctx.get().get("social", {}).get("trending", [])[:5]
+        trending = [t["ticker"] if isinstance(t, dict) else t for t in trending_raw if t]
         if trending:
             tickers += trending
             print(f"   📱 Trending: {trending}")
@@ -321,7 +322,11 @@ def _update_signal_memory(result: dict):
     signal  = result.get("signal", "HOLD")
     price   = result.get("current_price", 0.0)
 
-    if signal in ("BUY", "SELL"):
+    # Only record BUY signals that were actually delivered — not suppressed trades,
+    # not SELL signals (shorts are unsupported: sizing/execution/exit lifecycle
+    # are all BUY-only, so recording a SELL would orphan it in signal_memory).
+    alert_sent = result.get("alert_sent", False)
+    if signal == "BUY" and alert_sent:
         _app_state.signal_memory[ticker] = {
             "signal":    signal,
             "price":     price,

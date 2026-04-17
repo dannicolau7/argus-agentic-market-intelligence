@@ -42,7 +42,12 @@ def risk_node(state: dict) -> dict:
 
     # ── 0. Circuit breaker — block BUYs on crash days / VIX spike ─────────────
     try:
-        spy_chg = state.get("spy_day_change", 0.0)
+        # Prefer already-computed value from tech_agent (market_regime["spy_day_chg"])
+        # before falling back to a live yfinance fetch.
+        spy_chg = (
+            state.get("spy_day_change")
+            or state.get("market_regime", {}).get("spy_day_chg", 0.0)
+        ) or 0.0
         if spy_chg == 0.0:
             import yfinance as yf
             fi       = yf.Ticker("SPY").fast_info
