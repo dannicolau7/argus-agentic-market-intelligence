@@ -232,6 +232,20 @@ def run_data_agent(state: dict) -> dict:
             "volume_ratio":     volume_ratio,
             "error":            None,
         })
+
+        # ── Data validation gate ──────────────────────────────────────────────
+        from utils.data_validator import validate_market_data, log_validation_failure
+        _val_errors = validate_market_data(
+            ticker=ticker,
+            price=price,
+            volume=float(current_volume),
+            ohlcv=bars,
+        )
+        if _val_errors:
+            print(f"⚠️  [DataAgent] Validation failed for {ticker}: {_val_errors}")
+            log_validation_failure(ticker, _val_errors, state)
+        state["validation_errors"] = _val_errors
+
         print(f"✅ [DataAgent] Done")
 
     except Exception as e:

@@ -315,7 +315,14 @@ Market window:  {t_win}  (score multiplier ×{t_mult})
 === SELF-LEARNED SIGNAL WEIGHTS (reference) ===
 MACD ×{w_macd}  RSI-bounce ×{w_rsi_bounce}  RSI-mom ×{w_rsi_mom}  VWAP ×{w_vwap}
 EMA ×{w_ema}  Volume ×{w_volume}  BB ×{w_bb}  SmartMoney ×{w_smd}
-Float ×{w_float}  Sentiment ×{w_sentiment}  Gap ×{w_gap}  Support ×{w_support}"""
+Float ×{w_float}  Sentiment ×{w_sentiment}  Gap ×{w_gap}  Support ×{w_support}
+
+=== DATA INTEGRITY GUARDRAIL ===
+CRITICAL: If ANY field in the data above shows None, null, 0, "unknown", or "N/A",
+you MUST set the corresponding score to 0 and note the missing field.
+DO NOT estimate, infer, or fabricate plausible-sounding numbers.
+DO NOT extrapolate from similar stocks or historical patterns.
+If core price data is missing or unreliable, return a score of 0."""
 
 
 def _bull_prompt(context_block: str, ticker: str, price: float,

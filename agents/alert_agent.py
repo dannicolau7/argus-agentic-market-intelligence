@@ -65,6 +65,16 @@ def _fresh_price(ticker: str, fetched_at_iso: str, current: float) -> float:
 @traceable(name="alert_agent", tags=["pipeline", "alert"])
 def alert_node(state: dict) -> dict:
     annotate_run(state)
+    ticker = state["ticker"]
+
+    # ── Final data validation gate (last line of defence before WhatsApp) ────
+    _val_errors = state.get("validation_errors")
+    if _val_errors:
+        print(f"🚫 [AlertAgent] {ticker} — data validation errors, no alert: {_val_errors}")
+        from utils.data_validator import send_admin_alert
+        send_admin_alert(ticker, _val_errors)
+        return {**state, "alert_sent": False, "alert_reason_code": "data_validation_failed"}
+
     signal        = state.get("signal", "HOLD")
     confidence    = state.get("confidence", 0)
     should_alert  = state.get("should_alert", False)

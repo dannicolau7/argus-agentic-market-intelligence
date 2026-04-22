@@ -104,11 +104,58 @@ def _get_threshold(state: dict) -> int:
     return max(45, min(80, base + int(adj)))
 
 
+def _blocked_return(state: dict, code: str, reason: str, price: float) -> dict:
+    """Shared early-exit helper for hard blocks in decision_node."""
+    threshold = _get_threshold(state)
+    return {
+        **state,
+        "signal":            "HOLD",
+        "confidence":        0,
+        "model_signal":      code,
+        "model_confidence":  0,
+        "threshold_used":    threshold,
+        "decision_delta":    reason,
+        "setup_type":        state.get("setup_type", "general"),
+        "entry_zone":        f"${price:.4f}",
+        "entry_low":         price,
+        "entry_high":        price,
+        "targets":           [],
+        "stop_loss":         round(price * 0.95, 4),
+        "stop_pct":          -5.0,
+        "reasoning":         reason,
+        "action_plan":       "",
+        "rr_ratio":          0.0,
+        "trade_horizon":     "swing",
+        "horizon_reasoning": "",
+        "main_risk":         code.lower(),
+        "top_3_signals":     [],
+        "should_alert":      False,
+        "price":             price,
+    }
+
+
 @traceable(name="decision_agent", tags=["claude", "signal"])
 def decision_node(state: dict) -> dict:
     ticker = state["ticker"]
     price  = state.get("current_price", 0.0)
     annotate_run(state)
+
+    # ── Data validation gate (populated by data_agent) ───────────────────────
+    _val_errors = state.get("validation_errors")
+    if _val_errors:   # non-empty list = real data problems
+        reason = f"DATA_BLOCKED: {', '.join(_val_errors)}"
+        print(f"🚫 [DecisionAgent] {ticker} blocked — {reason}")
+        from utils.data_validator import log_validation_failure, send_admin_alert
+        log_validation_failure(ticker, _val_errors, state)
+        send_admin_alert(ticker, _val_errors)
+        return _blocked_return(state, "DATA_BLOCKED", reason, price)
+
+    # ── Market hours gate ────────────────────────────────────────────────────
+    from utils.data_validator import check_market_hours
+    _mkt_ok, _mkt_reason = check_market_hours()
+    if not _mkt_ok:
+        print(f"🕐 [DecisionAgent] {ticker} — outside trading window ({_mkt_reason}), no BUY/SELL")
+        return _blocked_return(state, "MARKET_HOURS_BLOCKED", _mkt_reason, price)
 
     # ── Alert deduplication ──────────────────────────────────────────────────
     news_triggered = state.get("news_triggered", False)
